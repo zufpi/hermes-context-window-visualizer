@@ -10,6 +10,8 @@ jobs:
     steps:
       - name: Check out plugin
         uses: actions/checkout@v4
+        with:
+          path: plugin
       - name: Check out compatible Hermes SDK
         uses: actions/checkout@v4
         with:
@@ -28,12 +30,14 @@ jobs:
         working-directory: hermes
       - name: Check plugin syntax
         run: node --check desktop/plugin.js
+        working-directory: plugin
       - name: Test Desktop contribution
         run: node --experimental-vm-modules --test tests/plugin.test.mjs
+        working-directory: plugin
         env:
           HERMES_DESKTOP_ROOT: ${{ github.workspace }}/hermes/apps/desktop
       - name: Validate Hermes plugin manifest and SDK surface
         uses: NousResearch/hermes-agent/.github/actions/plugin-validate@639eee305860ebcde0926321cbb6ef2f4f4c803d
         with:
-          path: ${{ github.workspace }}
+          path: ${{ github.workspace }}/plugin
           hermes-ref: 639eee305860ebcde0926321cbb6ef2f4f4c803d
