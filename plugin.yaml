@@ -1,0 +1,14 @@
+name: context-window-visualizer
+version: "0.2.0"
+description: Visualize the focused chat's context window and provider-reported account limits.
+author: zufpi
+homepage: https://github.com/zufpi/hermes-context-window-visualizer
+manifest_version: 2
+api_version: 1
+license: MIT
+requires_hermes: ">=0.21.5"
+tags: [desktop, context, quota, instructions]
+provides_tools: []
+provides_hooks: []
+provides_middleware: []
+requires_env: []

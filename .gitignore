@@ -1,0 +1,14 @@
+# Local/editor and test artifacts
+.DS_Store
+node_modules/
+coverage/
+*.log
+
+# Local credentials and environment
+.env
+.env.*
+.npmrc
+auth.json
+*.pem
+*.key
+*.p12

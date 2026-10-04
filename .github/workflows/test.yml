@@ -1,0 +1,39 @@
+name: Validate Desktop plugin
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@v4
+      - name: Check out compatible Hermes SDK
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: v2026.9.24
+          path: hermes
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: npm
+          cache-dependency-path: hermes/package-lock.json
+      - name: Install Desktop SDK test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: hermes
+      - name: Check plugin syntax
+        run: node --check desktop/plugin.js
+      - name: Test Desktop contribution
+        run: node --experimental-vm-modules --test tests/plugin.test.mjs
+        env:
+          HERMES_DESKTOP_ROOT: ${{ github.workspace }}/hermes/apps/desktop
+      - name: Validate Hermes plugin manifest and SDK surface
+        uses: NousResearch/hermes-agent/.github/actions/plugin-validate@639eee305860ebcde0926321cbb6ef2f4f4c803d
+        with:
+          path: ${{ github.workspace }}
+          hermes-ref: 639eee305860ebcde0926321cbb6ef2f4f4c803d
