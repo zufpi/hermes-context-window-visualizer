@@ -6,9 +6,11 @@ See how full the **focused chat’s model context window** is in the Hermes Desk
 
 - [Install](#install)
 - [Reading the display](#reading-the-display)
+- [Data sources and provider support](#data-sources-and-provider-support)
 - [Focused chats, profiles, and remote gateways](#focused-chats-profiles-and-remote-gateways)
 - [Privacy and safety](#privacy-and-safety)
 - [Troubleshooting](#troubleshooting)
+- [To do](#to-do)
 - [Development and compatibility](#development-and-compatibility)
 
 ## Install
@@ -17,13 +19,27 @@ See how full the **focused chat’s model context window** is in the Hermes Desk
 
 ### Install from Git
 
-Once this repository contains the plugin code publicly:
+From Hermes Desktop:
 
 1. In Hermes Desktop, open **Capabilities → Plugins → Install from Git**.
 2. Enter `https://github.com/zufpi/hermes-context-window-visualizer` and select the **Desktop UI** component. Review the source and destination in the confirmation screen before installing.
 3. Check that **Context Window Visualizer** is enabled in the **Desktop** column of **Capabilities → Plugins**. Its **Context** item appears in the bottom status bar; right-click the bar and use **Show in status bar** if the item is hidden.
 
 A Git install is a custom-source install, **not a reviewed catalog install or an immutable catalog pin**. Inspect the code you install. If the menu does not appear after installation, use **Cmd/Ctrl+K → Reload desktop plugins**. A plugin that you previously disabled remains disabled until you re-enable it.
+
+### Install with the Hermes CLI
+
+On the machine running Hermes Desktop, use the repository URL (the plugin is not in the catalog, so its name alone will not resolve):
+
+```sh
+hermes plugins install https://github.com/zufpi/hermes-context-window-visualizer --enable
+```
+
+This installs the package under `$HERMES_HOME/plugins/context-window-visualizer`. The CLI enables the package; the **Desktop UI** is a separate switch. In Desktop, run **Cmd/Ctrl+K → Reload desktop plugins**, then enable **Context Window Visualizer** in the Desktop column of **Capabilities → Plugins** if it is off. No gateway restart is needed for this Desktop-only plugin, even if the CLI prints its generic restart reminder.
+
+If you previously copied `plugin.js` into `$HERMES_HOME/desktop-plugins/context-window-visualizer/` by hand, move that folder **outside** `desktop-plugins/` before using the CLI-managed install. Desktop deliberately preserves a manual copy instead of overwriting it with a package copy; otherwise you may keep running the old file. For remote gateways, install the Desktop half on the machine running the app, not solely on the remote backend.
+
+To validate the installed package, run `hermes plugins validate "${HERMES_HOME:-$HOME/.hermes}/plugins/context-window-visualizer" --install-deps`. `hermes plugins doctor` currently expects a Python `__init__.py` and reports an error for this Desktop-only package; it is not the validation command for this case.
 
 ### Local developer install
 
@@ -51,6 +67,19 @@ Send a first message to initialize a new chat if its context is unavailable. Whi
 
 The backend’s context-file manifest was added in [#91272](https://github.com/NousResearch/hermes-agent/pull/91272) and its built-in presentation proposed in [#126219](https://github.com/NousResearch/hermes-agent/pull/126219).
 
+## Data sources and provider support
+
+This plugin has no provider-specific integration or credentials of its own. It uses two Hermes session RPCs for the focused chat, plus Desktop's live usage state during a turn:
+
+| Display | Hermes source | Provider coverage |
+| --- | --- | --- |
+| Context occupancy, model, estimated composition, and context files | `session.context_breakdown`; `focusedUsage` during a turn | Provider-neutral when the backend reports a usable model context window. |
+| Account-limit bars | `session.usage` → `account_lines` | Any provider for which Hermes returns a percentage-based allowance window in its account-usage response. |
+
+In the supported Hermes backend, built-in account-usage fetchers cover **OpenAI Codex**, **Anthropic**, and **OpenRouter**. Provider profiles can also implement Hermes's `fetch_account_usage` hook. This plugin renders their reported percentage windows without maintaining a separate provider list. OpenRouter may report only a credit balance; that detail is **not** a percentage window and is not shown here. Similarly, a provider or account with no reported windows gets no fabricated bar. Provider-reported percentages and reset times are account allowances, not remaining context tokens.
+
+The context display has been exercised locally with an OpenAI chat; the other provider account-limit paths have not been tested end to end by this project. The rendering tests use synthetic RPC responses, not live provider accounts.
+
 ## Focused chats, profiles, and remote gateways
 
 The Desktop contribution is **app-level**: installing the Desktop UI once in the Desktop loader makes the chip available as you switch profiles, tabs, split chat tiles, or registered gateways. It does not install a plugin on each backend or aggregate usage across accounts. What it displays belongs to the **currently focused chat tile**, not necessarily the active gateway’s home profile or the last chat that sent a turn.
@@ -76,6 +105,10 @@ For RPC reads, it resolves the focused session’s `{ connectionId, profile }` o
 | Categories do not add up to occupancy | Expected: the composition figures are rough estimates on their own scale; occupancy can be provider-anchored. Full-file sizes are before truncation. |
 
 For loader errors, see the [Desktop Plugin SDK troubleshooting guide](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk). The app’s own Context Usage control remains available independently.
+
+## To do
+
+- [ ] Implement and test the plugin on Windows.
 
 ## Development and compatibility
 
