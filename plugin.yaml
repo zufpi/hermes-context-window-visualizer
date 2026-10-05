@@ -1,5 +1,5 @@
 name: context-window-visualizer
-version: "0.2.0"
+version: "0.3.0"
 description: Visualize the focused chat's context window and provider-reported account limits.
 author: zufpi
 homepage: https://github.com/zufpi/hermes-context-window-visualizer
@@ -12,3 +12,24 @@ provides_tools: []
 provides_hooks: []
 provides_middleware: []
 requires_env: []
+config_schema:
+  show_openai_codex:
+    type: bool
+    default: true
+    label: OpenAI Codex
+    description: Show account limits when the focused chat's returned provider id is openai-codex.
+  show_anthropic:
+    type: bool
+    default: true
+    label: Anthropic
+    description: Show account limits when the focused chat's returned provider id is anthropic.
+  show_openrouter:
+    type: bool
+    default: true
+    label: OpenRouter
+    description: Show account limits when the focused chat's returned provider id is openrouter.
+  show_other:
+    type: bool
+    default: true
+    label: Other providers
+    description: Show account limits for any other returned provider id.

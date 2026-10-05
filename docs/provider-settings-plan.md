@@ -35,6 +35,8 @@ Context occupancy, model name, composition, and context files do not change when
 
 When the returned provider's switch is false, omit the whole account-limit section, including its provider label. Do not replace it with an error or an empty-state line. When the switch is true, keep today's parser: only valid `N% remaining (M% used)` windows, no invented shorter window, no credit-balance bar.
 
+A payload with no provider id is not `show_other`. Any no-id payload keeps the existing empty, error, or unavailable account status even when `show_other` is false. All four switches off still skips `session.usage` and omits the section.
+
 ### CLI
 
 Run the command on the machine whose Hermes home owns the chat. For a non-default profile, prefix `hermes -p <profile>`.
@@ -46,7 +48,7 @@ hermes config set plugins.entries.context-window-visualizer.settings.show_anthro
 hermes config unset plugins.entries.context-window-visualizer.settings.show_other
 ```
 
-`false`, `no`, and `off` store a boolean false. `true`, `yes`, and `on` store true. `unset` removes the override so the manifest default (true) applies again. `get` prints `true` or `false`.
+`false`, `no`, and `off` store a boolean false. `true`, `yes`, and `on` store true. `unset` removes the stored override. `get` prints only an explicitly stored `true` or `false`. An unset or missing key prints `Config key not set`. Desktop still applies the manifest default (true) when the key is unset.
 
 The gateway `config.get` RPC is a different, fixed key list. It rejects this path. The plugin must not call it, and must not request the full config document.
 
@@ -72,7 +74,7 @@ The occupancy bar remains. That provider's account limits do not. Another provid
    - **Settings still loading:** do not call `session.usage` yet.
    - **Settings unavailable:** the method is unknown (`-32601`), or the list succeeds but this package has no settings schema on that backend. Treat every switch as true and keep the existing eligible `session.usage` call.
    - **Fail closed:** timeout, any other settings error, a non-boolean stored value, or a payload that belongs to a different connection or profile. Do not call `session.usage`. Do not reuse another profile's booleans.
-5. From the one usage payload, classify the provider id and apply that switch. If it is false, omit the section. Do not issue another usage call.
+5. From the one usage payload, classify the provider id and apply that switch. If it is false, omit the section. If there is no provider id, keep the existing account status instead of applying `show_other`. Do not issue another usage call.
 
 Refresh repeats the same decision. It does not poll in the background.
 
@@ -109,6 +111,7 @@ Extend the existing rendered-plugin tests. Keep using synthetic RPC data.
 - `show_openai_codex: false` with `Provider: openai-codex (Pro)` omits the account section and does not issue a second usage call. The occupancy bar remains. An Anthropic payload in the same session still renders.
 - The Anthropic and OpenRouter flags behave the same way, each matching only its own id.
 - `show_other: false` hides `nous` and a custom hook id, and still shows `openai-codex`.
+- `show_other: false` with no provider id still shows the existing unavailable or empty account status, including a nonempty `account_lines` list that has no `Provider:` line. All four false still does not call `session.usage`.
 - A provider id that merely contains one of the three names stays under `show_other`.
 - All four false: the usage query is disabled even when the chat would otherwise be eligible.
 - Settings in flight: no usage call yet. After a matching true result, one call.

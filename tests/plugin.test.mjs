@@ -21,6 +21,16 @@ async function loadPlugin() {
     expanded: false, refetches: 0, accountRefetches: 0, items: [], request: null,
     events: new Map(), resets: [],
     accountQuery: { isFetching: false, isPending: false, isError: false, data: { account_lines: [] } },
+    settingsQuery: {
+      isFetching: false, isPending: false, isError: false, error: null,
+      data: {
+        show_openai_codex: true, show_anthropic: true, show_openrouter: true, show_other: true
+      }
+    },
+    pluginsPayload: null,
+    settingsError: null,
+    settingsRefetches: 0,
+    requests: [],
     query: { isFetching: false, isPending: false, isError: false, data: { context_max: 4000, context_files: [] } }
   }
   const atoms = {
@@ -41,7 +51,15 @@ async function loadPlugin() {
     host: {
       state: atoms,
       profileRoutes: async () => state.routes,
-      requestProfile: async (...args) => { state.request = args; return state.query.data }
+      requestProfile: async (...args) => {
+        state.request = args
+        state.requests.push(args)
+        if (args[1] === 'plugins.manage') {
+          if (state.settingsError) throw state.settingsError
+          return state.pluginsPayload
+        }
+        return state.query.data
+      }
     },
     queryClient: { resetQueries: async options => { state.resets.push(options) } },
     usePluginI18n: () => (key, ...args) => {
@@ -59,6 +77,10 @@ async function loadPlugin() {
       if (options.queryKey[1] === 'account-limits') {
         state.accountOptions = options
         return { ...state.accountQuery, refetch: async () => { state.accountRefetches += 1 } }
+      }
+      if (options.queryKey[1] === 'provider-settings') {
+        state.settingsOptions = options
+        return { ...state.settingsQuery, refetch: async () => { state.settingsRefetches += 1 } }
       }
       state.options = options
       return { ...state.query, refetch: async () => { state.refetches += 1 } }
@@ -234,6 +256,29 @@ test('routes model breakdown reads to the focused chat connection after a switch
   assert.equal(state.request[3], 25_000)
 })
 
+test('hides the account section when the returned openai-codex provider is disabled', async () => {
+  const { state, menu } = await loadPlugin()
+  state.query.data = {
+    model: 'example-model-200k', context_max: 200000, context_used: 50000,
+    context_percent: 25, context_estimated: false, context_files: [], categories: []
+  }
+  state.accountQuery.data = { account_lines: [
+    'Provider: openai-codex (Pro)',
+    'Weekly: 80% remaining (20% used)'
+  ] }
+  state.settingsQuery.data = {
+    show_openai_codex: false, show_anthropic: true, show_openrouter: true, show_other: true
+  }
+  const html = menu()
+  assert.match(html, /example-model-200k/)
+  assert.match(html, /25% used/)
+  assert.match(html, /role="progressbar"/)
+  assert.doesNotMatch(html, /Account limits/)
+  assert.doesNotMatch(html, /openai-codex/)
+  assert.doesNotMatch(html, /Weekly/)
+  assert.equal(state.accountOptions.enabled, true)
+})
+
 test('shows only provider-reported account windows as remaining-allowance bars', async () => {
   const { state, menu } = await loadPlugin()
   state.accountQuery.data = { account_lines: [
@@ -360,4 +405,317 @@ test('unknown statuses fall back, refresh stays in the menu, and disabled connec
     { connectionId: 'remote-a', profile: 'default', targetProfile: 'default', mode: 'remote' }]
   assert.match(menu(), /connection is unavailable/)
   assert.equal(state.accountOptions.enabled, false)
+})
+
+const shownFlags = () => ({
+  show_openai_codex: true, show_anthropic: true, show_openrouter: true, show_other: true
+})
+
+function settleChat(state, lines = ['Provider: openai-codex (Pro)', 'Weekly: 80% remaining (20% used)']) {
+  state.query.data = {
+    model: 'example-model-200k', context_max: 200000, context_used: 50000,
+    context_percent: 25, context_estimated: false, context_files: [], categories: []
+  }
+  state.accountQuery = { isFetching: false, isPending: false, isError: false, data: { account_lines: lines } }
+}
+
+function settingsSchema(values) {
+  return Object.entries(values).map(([key, value]) => ({ key, type: 'boolean', value, default: true }))
+}
+
+function fromPlugin(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+test('shows built-in provider windows when their switches are true', async () => {
+  const { state, menu, registrations } = await loadPlugin()
+  for (const provider of ['openai-codex', 'anthropic', 'openrouter']) {
+    settleChat(state, [`Provider: ${provider}`, 'Weekly: 80% remaining (20% used)'])
+    state.settingsQuery.data = shownFlags()
+    const html = menu()
+    assert.match(html, new RegExp(provider))
+    assert.match(html, /Weekly/)
+    assert.match(html, /25% used/)
+    assert.equal(state.accountOptions.enabled, true)
+  }
+  assert.match(renderToStaticMarkup(registrations[0].data.label), /25%/)
+  state.requests = []
+  await state.accountOptions.queryFn()
+  const usage = state.requests.filter(args => args[1] === 'session.usage')
+  assert.equal(usage.length, 1)
+  assert.equal(usage[0][0].connectionId, 'remote-a')
+  assert.equal(usage[0][0].profile, 'default')
+  assert.equal(usage[0][2].session_id, 'runtime-1')
+})
+
+test('hides only the provider whose switch is off', async () => {
+  const { state, menu } = await loadPlugin()
+  settleChat(state)
+  state.settingsQuery.data = { ...shownFlags(), show_openai_codex: false }
+  assert.doesNotMatch(menu(), /Account limits/)
+  assert.equal(state.accountOptions.enabled, true)
+  state.requests = []
+  await state.accountOptions.queryFn()
+  assert.equal(state.requests.filter(args => args[1] === 'session.usage').length, 1)
+
+  settleChat(state, ['Provider: anthropic', 'Weekly: 70% remaining (30% used)'])
+  let html = menu()
+  assert.match(html, /anthropic/)
+  assert.match(html, /Weekly/)
+  assert.match(html, /25% used/)
+  state.settingsQuery.data = { ...shownFlags(), show_anthropic: false }
+  assert.doesNotMatch(menu(), /Account limits|anthropic/)
+  settleChat(state, ['Provider: openai-codex', 'Weekly: 80% remaining (20% used)'])
+  html = menu()
+  assert.match(html, /openai-codex/)
+  assert.match(html, /Weekly/)
+
+  settleChat(state, ['Provider: openrouter', 'Weekly: 40% remaining (60% used)'])
+  state.settingsQuery.data = shownFlags()
+  assert.match(menu(), /openrouter/)
+  state.settingsQuery.data = { ...shownFlags(), show_openrouter: false }
+  assert.doesNotMatch(menu(), /Account limits|openrouter/)
+  settleChat(state, ['Provider: anthropic (Team)', 'Weekly: 70% remaining (30% used)'])
+  html = menu()
+  assert.match(html, /anthropic/)
+  assert.match(html, /Weekly/)
+  assert.doesNotMatch(html, /5h session|Hourly|\d+ tokens remaining/)
+})
+
+test('keeps substring provider ids on the other switch', async () => {
+  const { state, menu } = await loadPlugin()
+  state.settingsQuery.data = { ...shownFlags(), show_other: false, show_openai_codex: true }
+  for (const id of ['nous', 'custom-hook', 'openai-codex-extra', 'my-anthropic', 'custom-openrouter']) {
+    settleChat(state, [`Provider: ${id} (Plan)`, 'Weekly: 80% remaining (20% used)'])
+    const html = menu()
+    assert.match(html, /example-model-200k/)
+    assert.match(html, /25% used/)
+    assert.doesNotMatch(html, /Account limits/)
+    assert.doesNotMatch(html, /Weekly/)
+  }
+  settleChat(state, ['Provider: openai-codex (Pro)', 'Weekly: 80% remaining (20% used)'])
+  const shown = menu()
+  assert.match(shown, /openai-codex \(Pro\)/)
+  assert.match(shown, /Weekly/)
+  assert.doesNotMatch(shown, /5h session|Hourly|\d+ tokens remaining/)
+})
+
+test('keeps the account status when usage returns no provider id', async () => {
+  const { state, menu } = await loadPlugin()
+  state.settingsQuery.data = { ...shownFlags(), show_other: false }
+  const payloads = [
+    [{}, /Account limits unavailable/],
+    [{ account_lines: [] }, /No account-limit windows reported/],
+    [{ account_lines: ['Unavailable: provider timeout'] }, /Account limits unavailable/],
+    [{ account_lines: ['Account usage unavailable'] }, /No account-limit windows reported/]
+  ]
+  for (const [data, status] of payloads) {
+    settleChat(state)
+    state.accountQuery.data = data
+    const html = menu()
+    assert.match(html, /example-model-200k/)
+    assert.match(html, /25% used/)
+    assert.match(html, /Account limits/)
+    assert.match(html, status)
+    assert.equal(state.accountOptions.enabled, true)
+  }
+  state.requests = []
+  await state.accountOptions.queryFn()
+  assert.equal(state.requests.filter(args => args[1] === 'session.usage').length, 1)
+})
+
+test('does not request usage when every provider switch is off', async () => {
+  const { state, menu } = await loadPlugin()
+  settleChat(state)
+  state.settingsQuery.data = {
+    show_openai_codex: false, show_anthropic: false, show_openrouter: false, show_other: false
+  }
+  const html = menu()
+  assert.match(html, /25% used/)
+  assert.match(html, /example-model-200k/)
+  assert.doesNotMatch(html, /Account limits|openai-codex|Weekly/)
+  assert.equal(state.accountOptions.enabled, false)
+  state.items.at(-1).onSelect({ preventDefault: () => {} })
+  assert.equal(state.refetches, 1)
+  assert.equal(state.accountRefetches, 0)
+})
+
+test('waits for provider settings before requesting usage', async () => {
+  const { state, menu } = await loadPlugin()
+  settleChat(state)
+  state.settingsQuery = { isFetching: true, isPending: true, isError: false, error: null, data: undefined }
+  assert.doesNotMatch(menu(), /Account limits/)
+  assert.equal(state.accountOptions.enabled, false)
+  state.settingsQuery = { isFetching: false, isPending: false, isError: false, error: null, data: shownFlags() }
+  const html = menu()
+  assert.equal(state.accountOptions.enabled, true)
+  assert.match(html, /Account limits/)
+  assert.match(html, /Weekly/)
+  state.requests = []
+  await state.accountOptions.queryFn()
+  assert.equal(state.requests.filter(args => args[1] === 'session.usage').length, 1)
+})
+
+test('keeps usage when plugins.manage is unknown', async () => {
+  const { state, menu } = await loadPlugin()
+  settleChat(state)
+  menu()
+  state.settingsError = Object.assign(new Error('Method not found'), { code: -32601 })
+  await assert.rejects(() => state.settingsOptions.queryFn(), error => error.code === -32601)
+  state.settingsQuery = {
+    isFetching: false, isPending: false, isError: true, error: { code: -32601 }, data: undefined
+  }
+  const html = menu()
+  assert.match(html, /Weekly/)
+  assert.match(html, /openai-codex/)
+  assert.match(html, /25% used/)
+  assert.equal(state.accountOptions.enabled, true)
+})
+
+test('treats a missing package schema as all providers visible', async () => {
+  const { state, menu } = await loadPlugin()
+  settleChat(state, ['Provider: nous', 'Weekly: 55% remaining (45% used)'])
+  menu()
+  state.pluginsPayload = { plugins: [{ key: 'other-plugin', name: 'other-plugin', settings_schema: [{ key: 'note', type: 'string', value: 'leave-me' }] }] }
+  assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), shownFlags())
+  state.pluginsPayload = { plugins: [{ key: 'context-window-visualizer', name: 'context-window-visualizer' }] }
+  assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), shownFlags())
+  state.pluginsPayload = { plugins: [{ name: 'context-window-visualizer', settings_schema: [] }] }
+  assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), shownFlags())
+  state.settingsQuery.data = shownFlags()
+  const html = menu()
+  assert.match(html, /nous/)
+  assert.match(html, /Weekly/)
+  assert.match(html, /25% used/)
+  assert.equal(state.accountOptions.enabled, true)
+  state.pluginsPayload = {
+    plugins: [
+      { key: 'other-plugin', settings_schema: [{ key: 'note', type: 'string', value: 'leave-me' }] },
+      {
+        name: 'context-window-visualizer',
+        settings_schema: [
+          { key: 'show_openai_codex', type: 'boolean', value: false, default: true },
+          { key: 'show_anthropic', type: 'boolean', default: false }
+        ]
+      }
+    ]
+  }
+  assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), {
+    show_openai_codex: false, show_anthropic: false, show_openrouter: true, show_other: true
+  })
+})
+
+test('fails closed on malformed, timed-out, or foreign provider settings', async () => {
+  const { state, menu, registrations } = await loadPlugin()
+  settleChat(state)
+  menu()
+  state.pluginsPayload = null
+  await assert.rejects(() => state.settingsOptions.queryFn(), /malformed settings/)
+  state.pluginsPayload = { plugins: 'nope' }
+  await assert.rejects(() => state.settingsOptions.queryFn(), /malformed settings/)
+  state.pluginsPayload = {
+    plugins: [{
+      key: 'context-window-visualizer',
+      settings_schema: settingsSchema({ ...shownFlags(), show_openrouter: 'off' })
+    }]
+  }
+  await assert.rejects(() => state.settingsOptions.queryFn(), /non-boolean/)
+  state.pluginsPayload = {
+    profile: 'work',
+    plugins: [{ key: 'context-window-visualizer', settings_schema: settingsSchema(shownFlags()) }]
+  }
+  await assert.rejects(() => state.settingsOptions.queryFn(), /profile mismatch/)
+  state.pluginsPayload = {
+    connectionId: 'remote-b',
+    plugins: [{ key: 'context-window-visualizer', settings_schema: settingsSchema(shownFlags()) }]
+  }
+  await assert.rejects(() => state.settingsOptions.queryFn(), /connection mismatch/)
+
+  state.settingsQuery = {
+    isFetching: false, isPending: false, isError: true, error: new Error('timeout'), data: shownFlags()
+  }
+  let html = menu()
+  assert.equal(state.accountOptions.enabled, false)
+  assert.doesNotMatch(html, /Account limits/)
+  assert.match(html, /25% used/)
+  assert.match(renderToStaticMarkup(registrations[0].data.label), /25%/)
+  state.items.at(-1).onSelect({ preventDefault: () => {} })
+  assert.equal(state.accountRefetches, 0)
+
+  state.settingsQuery = {
+    isFetching: false, isPending: false, isError: false, error: null,
+    data: { show_openai_codex: 'no', show_anthropic: true, show_openrouter: true, show_other: true }
+  }
+  html = menu()
+  assert.equal(state.accountOptions.enabled, false)
+  assert.doesNotMatch(html, /Account limits/)
+  assert.match(html, /example-model-200k/)
+  state.items.at(-1).onSelect({ preventDefault: () => {} })
+  assert.equal(state.accountRefetches, 0)
+})
+
+test('reads provider settings only for the focused route', async () => {
+  const { state, menu } = await loadPlugin()
+  settleChat(state)
+  menu()
+  assert.deepEqual(Array.from(state.settingsOptions.queryKey), [
+    'context-window-visualizer', 'provider-settings', 'remote-a', 'default'
+  ])
+  assert.equal(state.settingsOptions.enabled, true)
+  state.pluginsPayload = {
+    plugins: [{ key: 'context-window-visualizer', settings_schema: settingsSchema(shownFlags()) }]
+  }
+  state.requests = []
+  await state.settingsOptions.queryFn()
+  assert.equal(state.requests.length, 1)
+  assert.equal(state.request[0].connectionId, 'remote-a')
+  assert.equal(state.request[0].profile, 'default')
+  assert.equal(state.request[1], 'plugins.manage')
+  assert.equal(state.request[2].action, 'list')
+  assert.equal(state.request[2].profile, 'default')
+  assert.equal(state.request[3], 12_000)
+
+  state.owner = { connectionId: 'remote-b', profile: 'work' }
+  state.routes = [{ connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' }]
+  state.settingsQuery = { isFetching: true, isPending: false, isError: false, error: null, data: shownFlags() }
+  menu()
+  assert.deepEqual(Array.from(state.settingsOptions.queryKey), [
+    'context-window-visualizer', 'provider-settings', 'remote-b', 'work'
+  ])
+  assert.equal(state.accountOptions.enabled, false)
+  state.settingsQuery = { isFetching: false, isPending: false, isError: false, error: null, data: shownFlags() }
+  menu()
+  state.requests = []
+  await state.settingsOptions.queryFn()
+  assert.equal(state.request[0].connectionId, 'remote-b')
+  assert.equal(state.request[2].action, 'list')
+  assert.equal(state.request[2].profile, 'work')
+
+  state.requests = []
+  state.routes = []
+  menu()
+  assert.equal(state.settingsOptions.enabled, false)
+  assert.equal(state.accountOptions.enabled, false)
+  state.owner = null
+  menu()
+  assert.equal(state.settingsOptions.enabled, false)
+  assert.equal(state.accountOptions.enabled, false)
+  state.owner = { connectionId: 'remote-b', profile: 'work' }
+  state.routes = [
+    { connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' },
+    { connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' }
+  ]
+  menu()
+  assert.equal(state.settingsOptions.enabled, false)
+  assert.equal(state.accountOptions.enabled, false)
+  assert.equal(state.requests.length, 0)
+})
+
+test('footer occupancy does not read provider settings', async () => {
+  const { state, registrations } = await loadPlugin()
+  settleChat(state)
+  const html = renderToStaticMarkup(registrations[0].data.label)
+  assert.match(html, /25%/)
+  assert.equal(state.settingsOptions, undefined)
+  assert.equal(state.requests.length, 0)
 })

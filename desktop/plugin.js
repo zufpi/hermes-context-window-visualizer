@@ -286,6 +286,63 @@ function accountLimitRows(lines) {
   return { provider, windows, unavailable }
 }
 
+const SETTING_KEYS = ['show_openai_codex', 'show_anthropic', 'show_openrouter', 'show_other']
+const PROVIDER_SETTING = {
+  'openai-codex': 'show_openai_codex',
+  anthropic: 'show_anthropic',
+  openrouter: 'show_openrouter'
+}
+const ALL_VISIBLE = {
+  show_openai_codex: true, show_anthropic: true, show_openrouter: true, show_other: true
+}
+
+function providerId(label) {
+  return String(label || '').replace(/ \([^()]*\)$/, '')
+}
+
+function settingsPhase(query) {
+  if (query.isPending || query.isFetching) return 'loading'
+  if (query.isError) {
+    const code = query.error?.code ?? query.error?.error?.code
+    return code === -32601 ? 'fallback' : 'closed'
+  }
+  const data = query.data
+  if (!data || SETTING_KEYS.some(key => typeof data[key] !== 'boolean')) return 'closed'
+  return SETTING_KEYS.every(key => data[key] === false) ? 'off' : 'ready'
+}
+
+function providerShown(lines, phase, data) {
+  if (phase === 'fallback') return true
+  const id = providerId(accountLimitRows(lines).provider)
+  if (!id) return true
+  const key = PROVIDER_SETTING[id] || 'show_other'
+  return data?.[key] === true
+}
+
+function flagsFromList(payload, route) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('malformed settings')
+  if (payload.profile != null && payload.profile !== route.profile) throw new Error('settings profile mismatch')
+  if (payload.connectionId != null && payload.connectionId !== route.connectionId) throw new Error('settings connection mismatch')
+  if (!Array.isArray(payload.plugins)) throw new Error('malformed settings')
+  const row = payload.plugins.find(plugin => plugin && (plugin.key === ID || plugin.name === ID))
+  const schema = row?.settings_schema
+  if (!row || !Array.isArray(schema) || !schema.length) return { ...ALL_VISIBLE }
+  const values = {}
+  for (const key of SETTING_KEYS) {
+    const entry = schema.find(item => item && item.key === key)
+    const stored = entry && entry.value != null ? entry.value : entry?.default
+    if (!entry || stored == null) values[key] = true
+    else if (typeof stored !== 'boolean') throw new Error('non-boolean provider setting')
+    else values[key] = stored
+  }
+  return values
+}
+
+function providerSettings(route) {
+  return host.requestProfile(route, 'plugins.manage', { action: 'list', profile: route.profile }, 12_000)
+    .then(payload => flagsFromList(payload, route))
+}
+
 function AccountLimitsVisual({ account, loading, error, t }) {
   const { provider, windows, unavailable } = accountLimitRows(account?.account_lines)
   return jsxs('section', {
@@ -384,9 +441,23 @@ function ContextFilesMenu() {
   const [open, setOpen] = useState(false)
   const detailsId = useId()
   const files = Array.isArray(breakdown?.context_files) ? breakdown.context_files : []
+  // Menu-only. Other plugin rows are dropped inside the request, and the
+  // context meter does not wait on this read.
+  const settings = useQuery({
+    queryKey: [ID, 'provider-settings', owner?.connectionId, owner?.profile],
+    queryFn: () => providerSettings(route),
+    enabled: Boolean(route),
+    retry: false,
+    gcTime: 0,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: false
+  })
+  const phase = route ? settingsPhase(settings) : 'loading'
   // A draft's session.usage falls back to the profile's configured provider,
   // which may differ from the model this chat will ultimately run.
-  const accountReady = Boolean(sessionId && route && Array.isArray(breakdown?.context_files))
+  const eligible = Boolean(sessionId && route && Array.isArray(breakdown?.context_files))
+  const accountReady = eligible && (phase === 'ready' || phase === 'fallback')
   const account = useQuery({
     queryKey: [ID, 'account-limits', owner?.connectionId, owner?.profile, sessionId, breakdown?.model],
     queryFn: () => host.requestProfile(route, 'session.usage', { session_id: sessionId }, 25_000),
@@ -406,13 +477,16 @@ function ContextFilesMenu() {
   else if (result.isError) message = t('failed')
   else if (!breakdown?.context_max) message = t('noAgent')
 
+  const settledAccount = accountReady && !account.isError && !account.isFetching && !account.isPending ? account.data : null
+  const showAccount = accountReady && !(settledAccount && !providerShown(settledAccount.account_lines, phase, settings.data))
+
   return jsxs('div', {
     className: 'flex w-80 max-w-[min(80vw,24rem)] flex-col gap-2 p-2 text-xs',
     children: [
       jsx('div', { className: 'px-2 font-medium text-foreground', children: t('title') }),
       jsx(ContextWindowVisual, { breakdown, usage: busy ? focusedUsage : null, t }),
       message ? jsx('p', { className: 'px-2 text-(--ui-text-secondary)', role: 'status', children: message }) : null,
-      accountReady ? jsx(AccountLimitsVisual, {
+      showAccount ? jsx(AccountLimitsVisual, {
         account: account.isError || account.isFetching ? null : account.data,
         loading: account.isPending || account.isFetching, error: account.isError, t
       }) : null,

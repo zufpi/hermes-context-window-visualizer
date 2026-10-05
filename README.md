@@ -7,6 +7,7 @@ See how full the **focused chat’s model context window** is in the Hermes Desk
 - [Install](#install)
 - [Reading the display](#reading-the-display)
 - [Data sources and provider support](#data-sources-and-provider-support)
+- [Provider visibility](#provider-visibility)
 - [Focused chats, profiles, and remote gateways](#focused-chats-profiles-and-remote-gateways)
 - [Privacy and safety](#privacy-and-safety)
 - [Troubleshooting](#troubleshooting)
@@ -51,7 +52,7 @@ mkdir -p "$HERMES_HOME/desktop-plugins/context-window-visualizer"
 cp desktop/plugin.js "$HERMES_HOME/desktop-plugins/context-window-visualizer/plugin.js"
 ```
 
-Run these commands from the repository root. If you use a custom Hermes home, set `HERMES_HOME` to the home **used by Desktop** before running them. On Windows, copy the file to the equivalent `desktop-plugins/context-window-visualizer/plugin.js` directory under Desktop’s Hermes home. The directory name must match the exported plugin ID. The loader watches for saves and normally hot-reloads; **Reload desktop plugins** in the command palette is the fallback. For local development, repeat the copy after editing the source, or edit the installed copy directly. This manual copy is separate from Git installation and does not install a backend component.
+Run these commands from the repository root. If you use a custom Hermes home, set `HERMES_HOME` to the home **used by Desktop** before running them. On Windows, copy the file to the equivalent `desktop-plugins/context-window-visualizer/plugin.js` directory under Desktop’s Hermes home. The directory name must match the exported plugin ID. The loader watches for saves and normally hot-reloads; **Reload desktop plugins** in the command palette is the fallback. For local development, repeat the copy after editing the source, or edit the installed copy directly. This manual copy is separate from Git installation and does not install a backend component. It also has no `plugin.yaml`, so the owning backend has no settings schema and the plugin gear is not shown. Account limits stay visible for every returned provider until the unified package is installed on that backend. See [Provider visibility](#provider-visibility).
 
 To remove a manual copy, disable it in **Capabilities → Plugins** and remove its `desktop-plugins/context-window-visualizer` directory from Desktop’s Hermes home. Use Hermes’s Plugins UI to manage a Git-installed copy instead.
 
@@ -61,7 +62,7 @@ To remove a manual copy, disable it in **Capabilities → Plugins** and remove i
 - **Context menu:** Click the chip for the backend-reported model name (when available), compact used/max token figures, and a larger occupancy bar. Hermes’s `session.context_breakdown` supplies the settled snapshot. When provider-anchored usage is available, Hermes uses it; otherwise occupancy is estimated and labeled **Estimated occupancy**. These are context-window figures, **not** the provider’s account allowance or a promise of how many more turns fit.
 - **Estimated composition:** A *separate* normalized bar and rough token estimates for the categories Hermes returns, such as system prompt, tool definitions, rules, skills, MCP, subagent definitions, memory, and conversation. The rough category figures are not measured shares of the occupancy meter and should not be added to infer an exact used-token total. Categories are shown only when a breakdown with usable category values is available.
 - **Context files:** If the backend reports any, expand **Context files** to see each file’s label, path, load/skip status, and approximate **whole-file** token size. The size is estimated *before truncation* and is not that file’s contribution to current usage. Statuses can include loaded, truncated, flagged, blocked, shadowed, suppressed, empty, or unreadable; a newer unknown status is shown as unavailable. There is no disclosure when no files are reported.
-- **Account limits:** When a settled breakdown is available, opening the menu calls `session.usage` for the same focused runtime session. The menu displays the provider label and only valid remaining-percentage windows in Hermes’s `account_lines`, with any returned reset detail. These bars are **remaining provider allowance**, not context occupancy or absolute remaining tokens. A provider might report a weekly window but no shorter one; the plugin never fabricates a missing window, token balance, or quota. If Hermes cannot provide the data, the menu reports that it is unavailable or that no windows were reported. Other text lines from `session.usage` are not rendered.
+- **Account limits:** When a settled breakdown is available and at least one provider switch is on, opening the menu calls `session.usage` once for the same focused runtime session. The menu displays the provider label and only valid remaining-percentage windows in Hermes’s `account_lines`, with any returned reset detail. These bars are **remaining provider allowance**, not context occupancy or absolute remaining tokens. A provider might report a weekly window but no shorter one; the plugin never fabricates a missing window, token balance, or quota. If that returned provider’s switch is off, the whole account section, including its label, is omitted. The context meter stays. If Hermes cannot provide the data, the menu reports that it is unavailable or that no windows were reported. Other text lines from `session.usage` are not rendered.
 
 Send a first message to initialize a new chat if its context is unavailable. While a turn is in progress, the chip and menu may show the focused session’s streamed usage instead of a stale breakdown; the categorized breakdown waits until the turn finishes. **Refresh** re-reads the context breakdown and, when eligible, account limits. There is **no timed background poll**: reopening the menu can re-query limits, window focus can re-query while the menu is mounted, and relevant session events reset cached reads. An account-limit lookup may cause Hermes to contact the provider’s account endpoint; it does **not** send a model prompt.
 
@@ -80,15 +81,54 @@ In the supported Hermes backend, built-in account-usage fetchers cover **OpenAI 
 
 The context display has been exercised locally with an OpenAI chat; the other provider account-limit paths have not been tested end to end by this project. The rendering tests use synthetic RPC responses, not live provider accounts.
 
+## Provider visibility
+
+Four booleans in `plugin.yaml` control whether the account-limit section is shown. Each defaults to true. They do not change the context meter, and they do not choose a provider or fill in missing windows.
+
+| Switch | Hides the account section when the returned provider id is |
+| --- | --- |
+| `show_openai_codex` | `openai-codex` |
+| `show_anthropic` | `anthropic` |
+| `show_openrouter` | `openrouter` |
+| `show_other` | any other id, including `nous` and custom `fetch_account_usage` providers |
+
+Hermes may render `Provider: <id> (<plan>)`. The plan suffix is ignored; the id is compared exactly. An id that only contains one of those names stays on `show_other`. With every switch off, the menu does not call `session.usage`. While settings are still loading, or when the settings read fails closed, it also does not call `session.usage`. If `plugins.manage` is unknown on that backend, or the package has no settings schema there, every switch is treated as on and the existing account lookup still runs.
+
+The values live at `plugins.entries.context-window-visualizer.settings.<key>` on the Hermes home of the profile that owns the chat. They are ordinary booleans. Run the command on that machine. For a non-default profile, prefix `hermes -p <profile>`.
+
+```sh
+hermes config get plugins.entries.context-window-visualizer.settings.show_openai_codex
+hermes config set plugins.entries.context-window-visualizer.settings.show_openai_codex false
+hermes config set plugins.entries.context-window-visualizer.settings.show_anthropic true
+hermes config unset plugins.entries.context-window-visualizer.settings.show_other
+```
+
+`false`, `no`, and `off` store false. `true`, `yes`, and `on` store true. `unset` removes the stored override. `get` prints only an explicitly stored `true` or `false`. An unset or missing key prints `Config key not set`. Desktop still applies the manifest default (true) when the key is unset.
+
+On a Git or CLI install of the unified package, Desktop shows the same switches:
+
+1. Open **Capabilities → Plugins** for the profile that owns the chat.
+2. On **Context Window Visualizer**, open the gear.
+3. Four switches are on by default: OpenAI Codex, Anthropic, OpenRouter, and other providers.
+4. Turn one off, then reopen the **Context** menu on a chat whose `session.usage` provider matches that switch.
+
+The occupancy bar remains. That provider’s account limits do not. Another provider’s limits still appear. Reload desktop plugins after installing the package so the Desktop half matches it.
+
+The gear exists only when the backend that serves **Capabilities → Plugins** has this package on disk and `plugins.manage` list returns a `settings_schema`. A manual copy of `plugin.js` into the Desktop loader has no `plugin.yaml`, so that backend has no schema, the gear is not rendered, and CLI keys written without the package are invisible to the list. Those installs keep the account section visible. This plugin does not add a second settings form.
+
+A remote chat’s settings and `session.usage` both come from the owning backend. Install the unified package on that backend’s profile, not only on the Desktop machine. The Desktop half stays app-level and still has to be enabled locally.
+
+Cursor usage is not part of this plugin. There is no documented public API for a personal Cursor allowance, and this package does not read tokens or call a guessed endpoint.
+
 ## Focused chats, profiles, and remote gateways
 
 The Desktop contribution is **app-level**: installing the Desktop UI once in the Desktop loader makes the chip available as you switch profiles, tabs, split chat tiles, or registered gateways. It does not install a plugin on each backend or aggregate usage across accounts. What it displays belongs to the **currently focused chat tile**, not necessarily the active gateway’s home profile or the last chat that sent a turn.
 
-For RPC reads, it resolves the focused session’s `{ connectionId, profile }` owner through the Desktop SDK’s asynchronous `profileRoutes()` and calls `requestProfile(...)` on the unique matching route. If that owner or route is missing or ambiguous, it shows an unavailable state rather than querying a different connection. A remote chat’s model, context files, and account limits come from **that remote backend** and its session/provider credential; file paths in the menu may therefore be remote paths. The Desktop plugin itself remains installed on your Desktop machine. A remote backend must support the relevant session RPCs and its connection must be available.
+For RPC reads, it resolves the focused session’s `{ connectionId, profile }` owner through the Desktop SDK’s asynchronous `profileRoutes()` and calls `requestProfile(...)` on the unique matching route. If that owner or route is missing or ambiguous, it shows an unavailable state rather than querying a different connection, and it does not read settings or account limits on a guessed route. A remote chat’s model, context files, account limits, and provider-visibility switches come from **that remote backend** and its session/provider credential; file paths in the menu may therefore be remote paths. The unified package must be installed on the owning backend’s profile. The Desktop plugin itself remains installed on your Desktop machine. A remote backend must support the relevant session RPCs and its connection must be available.
 
 ## Privacy and safety
 
-- The plugin uses the existing authenticated Hermes connection for `session.context_breakdown` and `session.usage`. Hermes’s backend may read instruction files for its context-file manifest and may call the configured provider’s account-usage endpoint. The plugin makes no direct third-party requests and never receives the provider credential.
+- The plugin uses the existing authenticated Hermes connection for `session.context_breakdown`, `session.usage`, and, while the Context menu is open, the owning profile’s `plugins.manage` list. That list is reduced to this plugin’s four visibility booleans before it is cached. The plugin does not read the full config document, and it does not log or keep other plugins’ rows. Hermes’s backend may read instruction files for its context-file manifest and may call the configured provider’s account-usage endpoint only when the chat is already eligible and at least one provider switch is on. Hiding every provider skips that call. Hiding one provider does not look up a different provider. The plugin makes no direct third-party requests and never receives the provider credential.
 - Expanding **Context files** shows complete file **paths** in your Desktop window, including paths from a remote backend. It does not show file contents. Take care with screen sharing or screenshots.
 - This code has no telemetry, stored credentials, persistent plugin storage, shell execution, background process, Python backend, agent tools, hooks, or middleware. Its SDK queries use Desktop’s in-memory React Query cache. It does not change model context, override Hermes internals, or update itself.
 - As with any Desktop plugin, installed JavaScript runs in the Desktop renderer with the app’s authority: SDK access is **not a sandbox**. Only install source you trust. A custom Git installation has not undergone catalog review.
@@ -102,6 +142,7 @@ For RPC reads, it resolves the focused session’s `{ connectionId, profile }` o
 | **Waiting for the response to finish before fetching the latest details** | The settled breakdown is paused during the focused chat’s turn; streamed occupancy can still appear. Reopen the menu after the turn. |
 | **Connection is unavailable** or context could not load | Check that the focused chat’s gateway/profile is connected and its backend is compatible. A missing or ambiguous owner route fails closed. Try **Refresh** once available. |
 | Account limits empty or unavailable | `session.usage` may have no reportable windows for this provider/session, or its lookup may fail. This is not a zero balance. Try **Refresh**; check the backend’s provider/account-usage support and connection. A draft without an initialized chat does not trigger an account lookup. |
+| Account limits absent while **Context** remains | The owning profile may have that provider’s switch off, or all four switches off. See [Provider visibility](#provider-visibility). A manual `plugin.js` copy cannot show the gear. |
 | Categories do not add up to occupancy | Expected: the composition figures are rough estimates on their own scale; occupancy can be provider-anchored. Full-file sizes are before truncation. |
 
 For loader errors, see the [Desktop Plugin SDK troubleshooting guide](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk). The app’s own Context Usage control remains available independently.
