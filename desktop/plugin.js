@@ -199,6 +199,22 @@ function FileRow({ source, t }) {
   })
 }
 
+// Hermes agent/context_breakdown.py _CATEGORIES. Remote color is not a CSS value.
+const CATEGORY_COLOR = {
+  system_prompt: 'var(--context-usage-system)',
+  tool_definitions: 'var(--context-usage-tools)',
+  rules: 'var(--context-usage-rules)',
+  skills: 'var(--context-usage-skills)',
+  mcp: 'var(--context-usage-mcp)',
+  subagent_definitions: 'var(--context-usage-subagents)',
+  memory: 'var(--context-usage-memory)',
+  conversation: 'var(--context-usage-conversation)'
+}
+
+function categoryColor(id) {
+  return Object.hasOwn(CATEGORY_COLOR, id) ? CATEGORY_COLOR[id] : 'var(--ui-stroke-tertiary)'
+}
+
 function ContextWindowVisual({ breakdown, usage, t }) {
   const snapshot = breakdown?.context_max > 0 ? breakdown : usage?.context_max > 0 ? usage : null
   if (!snapshot) return null
@@ -244,7 +260,7 @@ function ContextWindowVisual({ breakdown, usage, t }) {
             children: categories.map(category => jsx('span', {
               style: {
                 width: `${Math.max(0, Number(category.tokens) || 0) / categoryTotal * 100}%`,
-                background: category.color
+                background: categoryColor(category.id)
               }
             }, category.id))
           }),
@@ -253,7 +269,7 @@ function ContextWindowVisual({ breakdown, usage, t }) {
             children: [
               jsxs('span', { className: 'flex min-w-0 items-center gap-2', children: [
                 jsx('span', { 'aria-hidden': true, className: 'size-2 shrink-0 rounded-[2px]',
-                  style: { background: category.color } }),
+                  style: { background: categoryColor(category.id) } }),
                 jsx('span', { className: 'truncate text-(--ui-text-secondary)',
                   children: t(`categories.${category.id}`) === `categories.${category.id}` ? category.label : t(`categories.${category.id}`) })
               ] }),
@@ -464,6 +480,7 @@ function ContextFilesMenu() {
     enabled: accountReady,
     retry: false,
     staleTime: 0,
+    gcTime: 0,
     refetchOnMount: 'always',
     refetchOnWindowFocus: true
   })

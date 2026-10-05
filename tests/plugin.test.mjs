@@ -193,6 +193,43 @@ test('visualizes the focused model context window, occupancy, and estimated comp
   assert.doesNotMatch(html, /full file/)
 })
 
+test('paints category swatches from known ids and drops remote color strings', async () => {
+  const { state, menu } = await loadPlugin()
+  const attack = 'url("https://evil.example/steal")'
+  state.query.data = {
+    model: 'example-model-200k', context_max: 200000, context_used: 50000,
+    context_estimated: false, context_files: [],
+    categories: [
+      { id: 'system_prompt', label: 'System prompt', tokens: 1000, color: attack },
+      { id: 'tool_definitions', label: 'Tool definitions', tokens: 1000, color: attack },
+      { id: 'rules', label: 'Rules', tokens: 1000, color: attack },
+      { id: 'skills', label: 'Skills', tokens: 1000, color: attack },
+      { id: 'mcp', label: 'MCP', tokens: 1000, color: attack },
+      { id: 'subagent_definitions', label: 'Subagents', tokens: 1000, color: attack },
+      { id: 'memory', label: 'Memory', tokens: 1000, color: attack },
+      { id: 'conversation', label: 'Conversation', tokens: 1000, color: attack },
+      { id: 'not_a_category', label: 'Injected', tokens: 1000, color: attack }
+    ]
+  }
+  const html = menu()
+  for (const color of [
+    'var(--context-usage-system)',
+    'var(--context-usage-tools)',
+    'var(--context-usage-rules)',
+    'var(--context-usage-skills)',
+    'var(--context-usage-mcp)',
+    'var(--context-usage-subagents)',
+    'var(--context-usage-memory)',
+    'var(--context-usage-conversation)',
+    'var(--ui-stroke-tertiary)'
+  ]) {
+    assert.ok(html.includes(`background:${color}`), color)
+  }
+  assert.equal((html.match(/background:var\(--ui-stroke-tertiary\)/g) || []).length, 3)
+  assert.doesNotMatch(html, /url\(/i)
+  assert.doesNotMatch(html, /evil\.example/)
+})
+
 test('uses live focused usage mid-turn without showing stale model or category data', async () => {
   const { state, menu } = await loadPlugin()
   state.busy = true
@@ -718,4 +755,23 @@ test('footer occupancy does not read provider settings', async () => {
   assert.match(html, /25%/)
   assert.equal(state.settingsOptions, undefined)
   assert.equal(state.requests.length, 0)
+})
+
+test('drops cached account lines when the menu query is unused', async () => {
+  const { state, menu, registrations } = await loadPlugin()
+  settleChat(state)
+  const meter = renderToStaticMarkup(registrations[0].data.label)
+  assert.match(meter, /25%/)
+  assert.equal(state.accountOptions, undefined)
+
+  menu()
+  assert.equal(state.accountOptions.gcTime, 0)
+  assert.equal(state.accountOptions.staleTime, 0)
+  assert.equal(state.accountOptions.refetchOnMount, 'always')
+  assert.equal(state.accountOptions.refetchOnWindowFocus, true)
+  assert.equal(state.accountOptions.retry, false)
+  assert.equal(state.accountOptions.refetchInterval, undefined)
+  assert.deepEqual(Array.from(state.accountOptions.queryKey), [
+    'context-window-visualizer', 'account-limits', 'remote-a', 'default', 'runtime-1', 'example-model-200k'
+  ])
 })
