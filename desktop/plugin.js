@@ -315,7 +315,12 @@ function AccountLimitsVisual({ account, loading, error, t }) {
 function useFocusedContextData() {
   const sessionId = useValue(host.state.focusedSessionId)
   const owner = useValue(host.state.focusedSessionOwner)
-  const busy = useValue(host.state.busy)
+  const primaryBusy = useValue(host.state.busy)
+  const busyBySession = useValue(host.state.busyBySession)
+  // The primary workspace can keep running after focus moves to an idle tile.
+  // When its runtime has a state slice, that slice owns the turn flag.
+  const busy = sessionId && Object.prototype.hasOwnProperty.call(busyBySession ?? {}, sessionId)
+    ? Boolean(busyBySession[sessionId]) : primaryBusy
   const focusedUsage = useValue(host.state.focusedUsage)
   // A focused split tile can belong to another connection even while the
   // active gateway stays on the foreground profile. Route discovery is async.

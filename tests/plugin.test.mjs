@@ -15,6 +15,7 @@ const source = await readFile(new URL('../desktop/plugin.js', import.meta.url), 
 async function loadPlugin() {
   const state = {
     sessionId: 'runtime-1', owner: { connectionId: 'remote-a', profile: 'default' }, busy: false,
+    busyBySession: {},
     routes: [{ connectionId: 'remote-a', profile: 'default', targetProfile: 'default', mode: 'remote' }],
     routesLoading: false, routesError: false, usage: null,
     expanded: false, refetches: 0, accountRefetches: 0, items: [], request: null,
@@ -27,6 +28,7 @@ async function loadPlugin() {
     focusedSessionOwner: { get: () => state.owner },
     focusedUsage: { get: () => state.usage },
     busy: { get: () => state.busy },
+    busyBySession: { get: () => state.busyBySession },
     connectionId: { get: () => 'remote-a' },
     profile: { get: () => 'default' }
   }
@@ -176,6 +178,31 @@ test('uses live focused usage mid-turn without showing stale model or category d
   assert.match(html, /~7K \/ 100K tokens/i)
   assert.match(html, /Estimated occupancy/)
   assert.doesNotMatch(html, /old-model|Estimated composition/)
+  assert.equal(state.options.enabled, false)
+})
+
+test('keeps an idle focused chat readable while another session runs', async () => {
+  const { state, menu } = await loadPlugin()
+  state.busy = true
+  state.busyBySession = { 'runtime-1': false, 'runtime-2': true }
+  state.query.data = { model: 'idle-model', context_max: 200000, context_used: 50000,
+    context_estimated: false, context_files: [], categories: [] }
+  state.accountQuery.data = { account_lines: ['Provider: example-provider (Pro)',
+    'Weekly: 80% remaining (20% used)'] }
+  const idle = menu()
+  assert.match(idle, /idle-model/)
+  assert.match(idle, /25% used/)
+  assert.match(idle, /Weekly/)
+  assert.doesNotMatch(idle, /Waiting for this turn to finish/)
+  assert.equal(state.options.enabled, true)
+  assert.equal(state.accountOptions.enabled, true)
+
+  state.sessionId = 'runtime-2'
+  state.busy = false
+  state.usage = { context_max: 100000, context_used: 7000 }
+  const active = menu()
+  assert.match(active, /Waiting for this turn to finish/)
+  assert.doesNotMatch(active, /idle-model|Weekly/)
   assert.equal(state.options.enabled, false)
 })
 
