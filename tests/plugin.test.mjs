@@ -122,6 +122,8 @@ test('paints context occupancy in the footer before the menu is opened', async (
   state.query.data = { model: 'example-model-200k', context_max: 200000, context_used: 50000,
     context_percent: 25, context_estimated: false, categories: [], context_files: [] }
   const html = renderToStaticMarkup(registrations[0].data.label)
+  assert.match(html, />Context<\/span>/)
+  assert.doesNotMatch(html, /Calculating\.\.\./)
   assert.match(html, /role="progressbar"/)
   assert.match(html, /aria-valuenow="25"/)
   assert.match(html, /25%/)
@@ -133,6 +135,8 @@ test('paints context occupancy in the footer before the menu is opened', async (
   state.busy = true
   state.usage = { context_max: 100000, context_used: 7000, context_estimated: true }
   const live = renderToStaticMarkup(registrations[0].data.label)
+  assert.match(live, />Calculating\.\.\.<\/span>/)
+  assert.doesNotMatch(live, />Context<\/span>/)
   assert.match(live, /~7%/)
   assert.match(live, /width:7%/)
   assert.match(live, /aria-valuetext="7% used, Estimated occupancy"/)
@@ -140,6 +144,7 @@ test('paints context occupancy in the footer before the menu is opened', async (
   state.busy = false
   state.sessionId = null
   const empty = renderToStaticMarkup(registrations[0].data.label)
+  assert.match(empty, />Context<\/span>/)
   assert.match(empty, /role="progressbar"/)
   assert.doesNotMatch(empty, /aria-valuenow=/)
 })
@@ -182,7 +187,7 @@ test('uses live focused usage mid-turn without showing stale model or category d
 })
 
 test('keeps an idle focused chat readable while another session runs', async () => {
-  const { state, menu } = await loadPlugin()
+  const { state, menu, registrations } = await loadPlugin()
   state.busy = true
   state.busyBySession = { 'runtime-1': false, 'runtime-2': true }
   state.query.data = { model: 'idle-model', context_max: 200000, context_used: 50000,
@@ -193,15 +198,17 @@ test('keeps an idle focused chat readable while another session runs', async () 
   assert.match(idle, /idle-model/)
   assert.match(idle, /25% used/)
   assert.match(idle, /Weekly/)
-  assert.doesNotMatch(idle, /Waiting for this turn to finish/)
+  assert.doesNotMatch(idle, /Waiting for the response to finish before fetching the latest details/)
   assert.equal(state.options.enabled, true)
   assert.equal(state.accountOptions.enabled, true)
+  assert.match(renderToStaticMarkup(registrations[0].data.label), />Context<\/span>/)
 
   state.sessionId = 'runtime-2'
   state.busy = false
   state.usage = { context_max: 100000, context_used: 7000 }
   const active = menu()
-  assert.match(active, /Waiting for this turn to finish/)
+  assert.match(renderToStaticMarkup(registrations[0].data.label), />Calculating\.\.\.<\/span>/)
+  assert.match(active, /Waiting for the response to finish before fetching the latest details/)
   assert.doesNotMatch(active, /idle-model|Weekly/)
   assert.equal(state.options.enabled, false)
 })
@@ -315,7 +322,7 @@ test('refuses stale data while busy, and distinguishes unavailable and error sta
   const { state, menu } = await loadPlugin()
   state.query.data.context_files = files
   state.busy = true
-  assert.match(menu(), /Waiting for this turn to finish/)
+  assert.match(menu(), /Waiting for the response to finish before fetching the latest details/)
   assert.doesNotMatch(menu(), /AGENTS\.md/)
   assert.equal(state.options.enabled, false)
   state.busy = false

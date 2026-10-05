@@ -99,7 +99,7 @@ For RPC reads, it resolves the focused session’s `{ connectionId, profile }` o
 | --- | --- |
 | No **Context** chip | Confirm the Desktop plugin is enabled in **Capabilities → Plugins**, the status-bar item is visible via **Show in status bar**, and the local file is at the matching plugin-ID path. Try **Cmd/Ctrl+K → Reload desktop plugins**. A load-error toast gives the reason. |
 | Dash, **Open a chat**, or **Send a message** | Focus a chat and send a first turn. Until a valid context maximum is returned, the plugin does not invent a percentage. |
-| **Waiting for this turn to finish** | The settled breakdown is paused during the focused chat’s turn; streamed occupancy can still appear. Reopen the menu after the turn. |
+| **Waiting for the response to finish before fetching the latest details** | The settled breakdown is paused during the focused chat’s turn; streamed occupancy can still appear. Reopen the menu after the turn. |
 | **Connection is unavailable** or context could not load | Check that the focused chat’s gateway/profile is connected and its backend is compatible. A missing or ambiguous owner route fails closed. Try **Refresh** once available. |
 | Account limits empty or unavailable | `session.usage` may have no reportable windows for this provider/session, or its lookup may fail. This is not a zero balance. Try **Refresh**; check the backend’s provider/account-usage support and connection. A draft without an initialized chat does not trigger an account lookup. |
 | Categories do not add up to occupancy | Expected: the composition figures are rough estimates on their own scale; occupancy can be provider-anchored. Full-file sizes are before truncation. |

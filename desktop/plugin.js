@@ -17,6 +17,7 @@ const translations = {
   en: {
     title: 'Context window',
     footer: 'Context',
+    calculating: 'Calculating...',
     used: percent => `${percent}% used`,
     tokens: (used, max) => `${used} / ${max} tokens`,
     estimated: 'Estimated occupancy',
@@ -37,7 +38,7 @@ const translations = {
     note: 'Full-file estimates before truncation, not tokens used in the context total.',
     noSession: 'Open a chat to inspect its context files.',
     noRoute: 'The focused chat’s connection is unavailable.',
-    busy: 'Waiting for this turn to finish…',
+    busy: 'Waiting for the response to finish before fetching the latest details…',
     loading: 'Loading context files…',
     noAgent: 'Send a message to initialize this chat, then reopen this menu.',
     empty: 'No context files were considered for this chat.',
@@ -58,6 +59,7 @@ const translations = {
   de: {
     title: 'Kontextfenster',
     footer: 'Kontext',
+    calculating: 'Berechne...',
     used: percent => `${percent}% belegt`,
     tokens: (used, max) => `${used} / ${max} Tokens`,
     estimated: 'Geschätzte Auslastung',
@@ -78,7 +80,7 @@ const translations = {
     note: 'Schätzungen der ganzen Datei vor dem Kürzen, nicht die Tokens der Kontext-Summe.',
     noSession: 'Öffne einen Chat, um seine Kontextdateien zu prüfen.',
     noRoute: 'Die Verbindung dieses Chats ist nicht verfügbar.',
-    busy: 'Warte auf das Ende dieses Durchlaufs…',
+    busy: 'Warte auf das Ende der Antwort, bevor die neuesten Details abgerufen werden…',
     loading: 'Kontextdateien werden geladen…',
     noAgent: 'Sende eine Nachricht, um den Chat zu initialisieren, und öffne das Menü erneut.',
     empty: 'Für diesen Chat wurden keine Kontextdateien berücksichtigt.',
@@ -361,7 +363,7 @@ function FooterMeter() {
   const used = max ? Math.min(max, Math.max(0, Number(snapshot.context_used) || 0)) : 0
   const percent = max ? Math.min(100, Math.max(0, Math.round(used / max * 100))) : null
   return jsxs('span', { className: 'inline-flex items-center gap-1.5', children: [
-    jsx('span', { children: t('footer') }),
+    jsx('span', { children: t(busy ? 'calculating' : 'footer') }),
     jsx('span', {
       role: 'progressbar', 'aria-label': t('title'), 'aria-valuemin': 0, 'aria-valuemax': 100,
       'aria-valuenow': percent === null ? undefined : percent,
