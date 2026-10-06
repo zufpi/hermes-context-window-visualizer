@@ -29,6 +29,8 @@ From Hermes Desktop:
 
 A Git install is a custom-source install, **not a reviewed catalog install or an immutable catalog pin**. Inspect the code you install. If the menu does not appear after installation, use **Cmd/Ctrl+K → Reload desktop plugins**. A plugin that you previously disabled remains disabled until you re-enable it.
 
+**Recommended if you want Cursor allowance:** Install the separate [Hermes Quota plugin](https://github.com/rarf/hermes-quota-plugin#install) on the backend/profile that owns the chat. Follow Quota’s instructions to restart Desktop completely and run `hermes quota refresh` once per profile, then enable **Cursor (via Quota cache)** in this plugin’s settings. Quota is **optional** for the context meter; if the Cursor switch is on without a fresh Quota cache, the Cursor section reports unavailable or stale data rather than inventing a percentage. This plugin only reads Quota’s cached snapshot—it does not refresh Cursor itself. Review [Quota’s separate credential and network behavior](#cursor-via-quota-cache) before installing it.
+
 ### Install with the Hermes CLI
 
 On the machine running Hermes Desktop, use the repository URL (the plugin is not in the catalog, so its name alone will not resolve):
