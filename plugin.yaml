@@ -1,5 +1,5 @@
 name: context-window-visualizer
-version: "0.4.0"
+version: "0.5.0"
 description: Visualize the focused chat's context window and provider-reported account limits.
 author: zufpi
 homepage: https://github.com/zufpi/hermes-context-window-visualizer
@@ -38,3 +38,20 @@ config_schema:
     default: false
     label: Cursor (via Quota cache)
     description: Show cached Cursor allowance from the optional Quota plugin on the focused profile. Controls display only; Quota manages its own credential access and refresh.
+  account_refresh_mode:
+    type: str
+    default: "on menu open"
+    choices: ["manual", "on menu open", "on menu open and focus"]
+    label: Account refresh
+    description: When to read session.usage for the focused chat. Manual waits for Refresh and does not read on menu open or window focus. On menu open reads once when the menu mounts and does not read again on window focus. On menu open and focus also reads when the window gains focus.
+  context_file_paths:
+    type: str
+    default: "filename only"
+    choices: ["hidden", "filename only", "full path"]
+    label: Context-file paths
+    description: How much of each context-file path to show in the menu. Hidden omits the path. Filename only shows the file name. Full path shows the path from the breakdown. Hidden and filename only reduce what appears on screen; the backend still sends the full path in the breakdown.
+  show_estimated_composition:
+    type: bool
+    default: true
+    label: Estimated composition
+    description: Show the estimated composition bar, category rows, and note. Does not hide context occupancy, the model name, account bars, context-file status, or the footer meter.

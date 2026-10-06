@@ -27,6 +27,7 @@ const translations = {
     limitsEmpty: 'No account-limit windows reported for this chat.',
     limitsLoading: 'Loading account limits…',
     limitsError: 'Account limits unavailable. Try Refresh.',
+    limitsManual: 'Select Refresh to load account limits',
     cursorLimits: 'Cursor limits (Quota cache)',
     cursorLoading: 'Loading cached Cursor limits…',
     cursorEmpty: 'No Cursor allowance windows in the Quota cache.',
@@ -76,6 +77,7 @@ const translations = {
     limitsEmpty: 'Für diesen Chat wurden keine Kontolimits gemeldet.',
     limitsLoading: 'Kontolimits werden geladen…',
     limitsError: 'Kontolimits nicht verfügbar. Bitte aktualisieren.',
+    limitsManual: 'Wähle Aktualisieren, um die Kontolimits zu laden.',
     cursorLimits: 'Cursor-Limits (Quota-Cache)',
     cursorLoading: 'Cursor-Limits aus dem Cache werden geladen…',
     cursorEmpty: 'Keine Cursor-Kontingentfenster im Quota-Cache.',
@@ -192,8 +194,30 @@ function formatEstimate(value) {
     : '?'
 }
 
-function FileRow({ source, t }) {
+function fileBasename(value) {
+  const text = String(value ?? '')
+  const trimmed = text.replace(/[\\/]+$/, '')
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  const name = cut >= 0 ? trimmed.slice(cut + 1) : trimmed
+  return name || text
+}
+
+const PATH_MODES = new Set(['hidden', 'filename only', 'full path'])
+const REFRESH_MODES = new Set(['manual', 'on menu open', 'on menu open and focus'])
+
+function pathDisplay(phase, data) {
+  const value = data?.context_file_paths
+  if (value === 'full path' && (phase === 'ready' || phase === 'off')) return 'full path'
+  if (value === 'hidden' || (value != null && !PATH_MODES.has(value))) return 'hidden'
+  if (phase === 'closed') return 'hidden'
+  return 'filename only'
+}
+
+function FileRow({ source, pathMode, t }) {
   const status = STATUS_KEYS.has(source.status) ? source.status : 'unknown'
+  const reveal = pathMode === 'full path'
+  const label = reveal || !/[\\/]/.test(String(source.label ?? '')) ? source.label : fileBasename(source.label)
+  const pathText = reveal ? source.path : fileBasename(source.path)
   return jsxs('li', {
     'data-status': status,
     className: 'min-w-0 border-t border-(--ui-stroke-tertiary) pt-2',
@@ -201,14 +225,18 @@ function FileRow({ source, t }) {
       jsxs('div', {
         className: 'flex min-w-0 flex-wrap items-baseline gap-x-2',
         children: [
-          jsx('span', { className: 'min-w-0 break-all font-medium text-foreground', children: source.label }),
+          jsx('span', { className: 'min-w-0 break-all font-medium text-foreground', children: label }),
           jsx('span', {
             className: 'text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)',
             children: t('fullFile', formatEstimate(source.est_tokens))
           })
         ]
       }),
-      jsx('p', { className: 'break-all text-[0.6875rem] text-(--ui-text-tertiary)', title: source.path, children: source.path }),
+      pathMode === 'hidden' ? null : jsx('p', {
+        className: 'break-all text-[0.6875rem] text-(--ui-text-tertiary)',
+        title: pathText,
+        children: pathText
+      }),
       jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: t(`status.${status}`) })
     ]
   })
@@ -230,7 +258,7 @@ function categoryColor(id) {
   return Object.hasOwn(CATEGORY_COLOR, id) ? CATEGORY_COLOR[id] : 'var(--ui-stroke-tertiary)'
 }
 
-function ContextWindowVisual({ breakdown, usage, t }) {
+function ContextWindowVisual({ breakdown, usage, showComposition = true, t }) {
   const snapshot = breakdown?.context_max > 0 ? breakdown : usage?.context_max > 0 ? usage : null
   if (!snapshot) return null
 
@@ -264,7 +292,7 @@ function ContextWindowVisual({ breakdown, usage, t }) {
       snapshot.context_estimated ? jsx('p', {
         className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: t('estimated')
       }) : null,
-      categories.length && categoryTotal ? jsxs('div', {
+      showComposition !== false && categories.length && categoryTotal ? jsxs('div', {
         className: 'mt-1 flex flex-col gap-2 border-t border-(--ui-stroke-tertiary) pt-2',
         children: [
           jsx('p', { className: 'font-medium text-foreground', children: t('composition') }),
@@ -328,6 +356,11 @@ const ALL_VISIBLE = {
   show_openai_codex: true, show_anthropic: true, show_openrouter: true, show_other: true,
   show_cursor: false
 }
+const DISPLAY_DEFAULTS = {
+  account_refresh_mode: 'on menu open',
+  context_file_paths: 'filename only',
+  show_estimated_composition: true
+}
 
 function providerId(label) {
   return String(label || '').replace(/ \([^()]*\)$/, '')
@@ -341,8 +374,18 @@ function settingsPhase(query) {
   }
   const data = query.data
   if (!data || BUILTIN_SETTING_KEYS.some(key => typeof data[key] !== 'boolean') ||
-      (data.show_cursor !== undefined && typeof data.show_cursor !== 'boolean')) return 'closed'
+      (data.show_cursor !== undefined && typeof data.show_cursor !== 'boolean') ||
+      (data.show_estimated_composition !== undefined && typeof data.show_estimated_composition !== 'boolean') ||
+      (data.account_refresh_mode !== undefined && !REFRESH_MODES.has(data.account_refresh_mode)) ||
+      (data.context_file_paths !== undefined && !PATH_MODES.has(data.context_file_paths))) return 'closed'
   return BUILTIN_SETTING_KEYS.every(key => data[key] === false) && data.show_cursor !== true ? 'off' : 'ready'
+}
+
+function accountRefreshMode(phase, data) {
+  const value = data?.account_refresh_mode
+  if ((phase === 'ready' || phase === 'fallback' || phase === 'off') &&
+      (value == null || REFRESH_MODES.has(value))) return value || DISPLAY_DEFAULTS.account_refresh_mode
+  return 'manual'
 }
 
 function providerShown(lines, phase, data) {
@@ -361,7 +404,7 @@ function flagsFromList(payload, route) {
   if (!Array.isArray(payload.plugins)) throw new Error('malformed settings')
   const row = payload.plugins.find(plugin => plugin && (plugin.key === ID || plugin.name === ID))
   const schema = row?.settings_schema
-  if (!row || !Array.isArray(schema) || !schema.length) return { ...ALL_VISIBLE }
+  if (!row || !Array.isArray(schema) || !schema.length) return { ...ALL_VISIBLE, ...DISPLAY_DEFAULTS }
   const values = {}
   for (const key of SETTING_KEYS) {
     const entry = schema.find(item => item && item.key === key)
@@ -370,7 +413,23 @@ function flagsFromList(payload, route) {
     else if (typeof stored !== 'boolean') throw new Error('non-boolean provider setting')
     else values[key] = stored
   }
+  values.account_refresh_mode = enumFromSchema(schema, 'account_refresh_mode', REFRESH_MODES, DISPLAY_DEFAULTS.account_refresh_mode)
+  values.context_file_paths = enumFromSchema(schema, 'context_file_paths', PATH_MODES, DISPLAY_DEFAULTS.context_file_paths)
+  const composition = schema.find(item => item && item.key === 'show_estimated_composition')
+  const compositionStored = composition && composition.value != null ? composition.value : composition?.default
+  if (!composition || compositionStored == null) values.show_estimated_composition = DISPLAY_DEFAULTS.show_estimated_composition
+  else if (typeof compositionStored !== 'boolean') throw new Error('non-boolean provider setting')
+  else values.show_estimated_composition = compositionStored
   return values
+}
+
+function enumFromSchema(schema, key, allow, fallback) {
+  const entry = schema.find(item => item && item.key === key)
+  if (!entry) return fallback
+  const stored = entry.value != null ? entry.value : entry.default
+  if (stored == null) return fallback
+  if (typeof stored !== 'string' || !allow.has(stored)) throw new Error('invalid ' + key)
+  return stored
 }
 
 function providerSettings(route) {
@@ -421,7 +480,7 @@ async function readCursorCache(route) {
   }
 }
 
-function AccountLimitsVisual({ account, loading, error, t }) {
+function AccountLimitsVisual({ account, loading, error, manual, t }) {
   const { provider, windows, unavailable } = accountLimitRows(account?.account_lines)
   return jsxs('section', {
     'aria-label': t('limits'),
@@ -444,7 +503,7 @@ function AccountLimitsVisual({ account, loading, error, t }) {
         window.detail ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: window.detail }) : null
       ] }, `${window.label}:${index}`)),
       !windows.length ? jsx('p', { role: 'status', className: 'text-(--ui-text-secondary)',
-        children: loading ? t('limitsLoading') : error || unavailable ? t('limitsError') : t('limitsEmpty') }) : null
+        children: manual ? t('limitsManual') : loading ? t('limitsLoading') : error || unavailable ? t('limitsError') : t('limitsEmpty') }) : null
     ]
   })
 }
@@ -581,15 +640,16 @@ function ContextFilesMenu() {
     refetchOnMount: 'always',
     refetchOnWindowFocus: false
   })
+  const refreshMode = accountRefreshMode(phase, settings.data)
   const account = useQuery({
-    queryKey: [ID, 'account-limits', owner?.connectionId, owner?.profile, sessionId, breakdown?.model],
+    queryKey: [ID, 'account-limits', owner?.connectionId, owner?.profile, sessionId, breakdown?.model, refreshMode],
     queryFn: () => host.requestProfile(route, 'session.usage', { session_id: sessionId }, 25_000),
-    enabled: accountReady,
+    enabled: accountReady && refreshMode !== 'manual',
     retry: false,
     staleTime: 0,
     gcTime: 0,
     refetchOnMount: 'always',
-    refetchOnWindowFocus: true
+    refetchOnWindowFocus: refreshMode === 'on menu open and focus'
   })
 
   let message = null
@@ -601,7 +661,9 @@ function ContextFilesMenu() {
   else if (result.isError) message = t('failed')
   else if (!breakdown?.context_max) message = t('noAgent')
 
-  const settledAccount = accountReady && !account.isError && !account.isFetching && !account.isPending ? account.data : null
+  const waitingForManual = accountReady && refreshMode === 'manual' && !account.isFetched
+  const settledAccount = accountReady && !waitingForManual && !account.isError && !account.isFetching && !account.isPending
+    ? account.data : null
   const showAccount = accountReady && !(settledAccount && !providerShown(settledAccount.account_lines, phase, settings.data))
 
   return jsxs('div', {
@@ -622,11 +684,17 @@ function ContextFilesMenu() {
           })
         ]
       }),
-      jsx(ContextWindowVisual, { breakdown, usage: busy ? focusedUsage : null, t }),
+      jsx(ContextWindowVisual, {
+        breakdown, usage: busy ? focusedUsage : null,
+        showComposition: settings.data?.show_estimated_composition !== false, t
+      }),
       message ? jsx('p', { className: 'px-2 text-(--ui-text-secondary)', role: 'status', children: message }) : null,
       showAccount ? jsx(AccountLimitsVisual, {
-        account: account.isError || account.isFetching ? null : account.data,
-        loading: account.isPending || account.isFetching, error: account.isError, t
+        account: settledAccount,
+        loading: !waitingForManual && (account.isPending || account.isFetching),
+        error: !waitingForManual && account.isError,
+        manual: waitingForManual,
+        t
       }) : null,
       cursorReady ? jsx(CursorLimitsVisual, {
         data: cursor.isFetching || cursor.isPending || cursor.isError ? null : cursor.data,
@@ -644,7 +712,7 @@ function ContextFilesMenu() {
         children: [
           jsx('p', { className: 'pb-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)', children: t('note') }),
           jsx('ul', { className: 'flex flex-col gap-2', children: files.map((source, index) =>
-            jsx(FileRow, { source, t }, `${source.path}:${source.label}:${index}`)) })
+            jsx(FileRow, { source, pathMode: pathDisplay(phase, settings.data), t }, `${index}:${source.label}`)) })
         ]
       }) : null,
       jsx(DropdownMenuItem, {

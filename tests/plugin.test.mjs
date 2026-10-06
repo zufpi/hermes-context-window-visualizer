@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import vm from 'node:vm'
 
@@ -89,7 +91,13 @@ async function loadPlugin() {
       }
       if (options.queryKey[1] === 'account-limits') {
         state.accountOptions = options
-        return { ...state.accountQuery, refetch: async () => { state.accountRefetches += 1 } }
+        const cacheKey = options.queryKey.map(part => String(part ?? '')).join('\0')
+        const refetch = async () => { state.accountRefetches += 1 }
+        // A pinned snapshot belongs to one query key. A new key is a new observer.
+        if (state.accountCacheKey != null && state.accountCacheKey !== cacheKey) {
+          return { isFetching: false, isPending: true, isFetched: false, isError: false, data: undefined, refetch }
+        }
+        return { ...state.accountQuery, refetch }
       }
       if (options.queryKey[1] === 'provider-settings') {
         state.settingsOptions = options
@@ -303,7 +311,7 @@ test('routes model breakdown reads to the focused chat connection after a switch
   assert.equal(state.request[0].connectionId, 'remote-b')
   assert.equal(state.request[2].session_id, 'runtime-2')
   assert.equal(state.request[3], 12_000)
-  assert.deepEqual(Array.from(state.accountOptions.queryKey), ['context-window-visualizer', 'account-limits', 'remote-b', 'work', 'runtime-2', 'example-model-200k'])
+  assert.deepEqual(Array.from(state.accountOptions.queryKey), ['context-window-visualizer', 'account-limits', 'remote-b', 'work', 'runtime-2', 'example-model-200k', 'on menu open'])
   await state.accountOptions.queryFn()
   assert.equal(state.request[0].connectionId, 'remote-b')
   assert.equal(state.request[1], 'session.usage')
@@ -412,10 +420,63 @@ test('fetches the focused runtime session and distinguishes whole-file size from
   assert.match(html, /~12K full file/i)
   assert.match(html, /~4K full file/i)
   assert.match(html, /Full-file estimates before truncation/)
-  assert.match(html, /\/repo\/AGENTS\.md/)
+  assert.match(html, /AGENTS\.md/)
+  assert.doesNotMatch(html, /\/repo\//)
   assert.match(html, /Loaded — truncated at the context-file limit/)
   assert.match(html, /Not loaded — a higher-priority context file won/)
   assert.match(html, /aria-expanded="true"/)
+})
+
+test('shows context-file basenames by default without parent paths', async () => {
+  const { state, menu } = await loadPlugin()
+  state.query.data = {
+    model: 'example-model-200k', context_max: 200000, context_used: 50000,
+    context_percent: 25, context_estimated: false, categories: [],
+    context_files: [
+      { label: 'AGENTS.md', path: '/example/work/private/AGENTS.md', est_tokens: 1200, status: 'loaded', loaded: true },
+      { label: 'CLAUDE.md', path: 'C:\\example\\private\\CLAUDE.md', est_tokens: 800, status: 'shadowed', loaded: false }
+    ]
+  }
+  menu()
+  state.items.find(item => item['aria-controls'] === 'details-id').onSelect({ preventDefault: () => {} })
+  const html = menu()
+  assert.match(html, /AGENTS\.md/)
+  assert.match(html, /CLAUDE\.md/)
+  assert.match(html, />Loaded</)
+  assert.match(html, /Not loaded — a higher-priority context file won/)
+  assert.match(html, /~1\.2K full file/i)
+  assert.match(html, /~800 full file/i)
+  assert.doesNotMatch(html, /example\/work\/private/)
+  assert.doesNotMatch(html, /example\\private/)
+  assert.doesNotMatch(html, /example\/private/)
+  assert.doesNotMatch(html, /title="[^"]*[/\\]/)
+})
+
+test('omits the context-file path element when paths are hidden', async () => {
+  const { state, menu } = await loadPlugin()
+  state.settingsQuery.data = { ...state.settingsQuery.data, context_file_paths: 'hidden' }
+  state.query.data = {
+    model: 'example-model-200k', context_max: 200000, context_used: 50000,
+    context_percent: 25, context_estimated: false, categories: [],
+    context_files: [
+      { label: '/example/work/private/AGENTS.md', path: '/example/work/private/AGENTS.md/', est_tokens: 1200, status: 'loaded', loaded: true },
+      { label: 'C:\\example\\private\\CLAUDE.md', path: 'C:\\example\\private\\CLAUDE.md\\', est_tokens: 800, status: 'shadowed', loaded: false }
+    ]
+  }
+  menu()
+  state.items.find(item => item['aria-controls'] === 'details-id').onSelect({ preventDefault: () => {} })
+  const html = menu()
+  assert.match(html, />AGENTS\.md</)
+  assert.match(html, />CLAUDE\.md</)
+  assert.match(html, />Loaded</)
+  assert.match(html, /Not loaded — a higher-priority context file won/)
+  assert.match(html, /~1\.2K full file/i)
+  assert.match(html, /~800 full file/i)
+  assert.doesNotMatch(html, /<p[^>]*title=/)
+  assert.doesNotMatch(html, /example\/work\/private/)
+  assert.doesNotMatch(html, /example\\private/)
+  assert.doesNotMatch(html, /title="/)
+  assert.doesNotMatch(html, /aria-label="[^"]*[/\\]/)
 })
 
 test('refuses stale data while busy, and distinguishes unavailable and error states', async () => {
@@ -465,6 +526,12 @@ test('unknown statuses fall back, refresh stays in the menu, and disabled connec
 const shownFlags = () => ({
   show_openai_codex: true, show_anthropic: true, show_openrouter: true, show_other: true,
   show_cursor: false
+})
+
+const displayDefaults = () => ({
+  account_refresh_mode: 'on menu open',
+  context_file_paths: 'filename only',
+  show_estimated_composition: true
 })
 
 function settleChat(state, lines = ['Provider: openai-codex (Pro)', 'Weekly: 80% remaining (20% used)']) {
@@ -633,11 +700,11 @@ test('treats a missing package schema as all providers visible', async () => {
   settleChat(state, ['Provider: nous', 'Weekly: 55% remaining (45% used)'])
   menu()
   state.pluginsPayload = { plugins: [{ key: 'other-plugin', name: 'other-plugin', settings_schema: [{ key: 'note', type: 'string', value: 'leave-me' }] }] }
-  assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), shownFlags())
+  assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), { ...shownFlags(), ...displayDefaults() })
   state.pluginsPayload = { plugins: [{ key: 'context-window-visualizer', name: 'context-window-visualizer' }] }
-  assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), shownFlags())
+  assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), { ...shownFlags(), ...displayDefaults() })
   state.pluginsPayload = { plugins: [{ name: 'context-window-visualizer', settings_schema: [] }] }
-  assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), shownFlags())
+  assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), { ...shownFlags(), ...displayDefaults() })
   state.settingsQuery.data = shownFlags()
   const html = menu()
   assert.match(html, /nous/)
@@ -658,7 +725,7 @@ test('treats a missing package schema as all providers visible', async () => {
   }
   assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), {
     show_openai_codex: false, show_anthropic: false, show_openrouter: true, show_other: true,
-    show_cursor: false
+    show_cursor: false, ...displayDefaults()
   })
 })
 
@@ -843,11 +910,11 @@ test('drops cached account lines when the menu query is unused', async () => {
   assert.equal(state.accountOptions.gcTime, 0)
   assert.equal(state.accountOptions.staleTime, 0)
   assert.equal(state.accountOptions.refetchOnMount, 'always')
-  assert.equal(state.accountOptions.refetchOnWindowFocus, true)
+  assert.equal(state.accountOptions.refetchOnWindowFocus, false)
   assert.equal(state.accountOptions.retry, false)
   assert.equal(state.accountOptions.refetchInterval, undefined)
   assert.deepEqual(Array.from(state.accountOptions.queryKey), [
-    'context-window-visualizer', 'account-limits', 'remote-a', 'default', 'runtime-1', 'example-model-200k'
+    'context-window-visualizer', 'account-limits', 'remote-a', 'default', 'runtime-1', 'example-model-200k', 'on menu open'
   ])
 })
 
@@ -1021,4 +1088,329 @@ test('Cursor renders only bounded windows, never cache metadata or malformed res
   state.settingsQuery.data = { ...cursorOnly(), show_cursor: 'true' }
   menu()
   assert.equal(state.cursorOptions.enabled, false)
+})
+
+function expandFiles(state) {
+  const opener = state.items.find(item => item['aria-controls'] === 'details-id')
+  assert.ok(opener)
+  opener.onSelect({ preventDefault() {} })
+}
+
+const privateFiles = [
+  { label: 'AGENTS.md', path: '/example/work/private/AGENTS.md', est_tokens: 1200, status: 'loaded', loaded: true },
+  { label: 'CLAUDE.md', path: 'C:\\example\\private\\CLAUDE.md', est_tokens: 800, status: 'shadowed', loaded: false }
+]
+
+test('shows the exact context-file path when full path is selected', async () => {
+  const { state, menu } = await loadPlugin()
+  state.settingsQuery.data = { ...shownFlags(), context_file_paths: 'full path' }
+  state.query.data = {
+    model: 'example-model-200k', context_max: 200000, context_used: 50000,
+    context_percent: 25, context_estimated: false, categories: [], context_files: privateFiles
+  }
+  menu()
+  expandFiles(state)
+  const html = menu()
+  assert.match(html, /title="\/example\/work\/private\/AGENTS\.md"/)
+  assert.match(html, />\/example\/work\/private\/AGENTS\.md</)
+  assert.match(html, /title="C:\\example\\private\\CLAUDE\.md"/)
+  assert.match(html, />C:\\example\\private\\CLAUDE\.md</)
+  assert.match(html, />Loaded</)
+  assert.match(html, /~1\.2K full file/i)
+  assert.match(html, /Not loaded — a higher-priority context file won/)
+})
+
+test('keeps context-file paths private until a settled full-path choice', async () => {
+  const { state, menu } = await loadPlugin()
+  state.query.data.context_files = [
+    { label: '/example/work/private/notes.md/', path: '/example/work/private/AGENTS.md/', est_tokens: 10, status: 'loaded', loaded: true },
+    { label: 'C:\\example\\private\\CLAUDE.md\\', path: 'C:\\example\\private\\CLAUDE.md\\', est_tokens: 10, status: 'shadowed', loaded: false }
+  ]
+  state.settingsQuery = {
+    isFetching: true, isPending: true, isError: false, error: null,
+    data: { ...shownFlags(), context_file_paths: 'full path' }
+  }
+  menu()
+  expandFiles(state)
+  let html = menu()
+  assert.match(html, />notes\.md</)
+  assert.match(html, />CLAUDE\.md</)
+  assert.doesNotMatch(html, /example\/work\/private/)
+  assert.doesNotMatch(html, /example\\private/)
+  assert.equal(state.accountOptions.enabled, false)
+
+  state.settingsQuery = {
+    isFetching: false, isPending: false, isError: true, error: new Error('timeout'),
+    data: { ...shownFlags(), context_file_paths: 'full path' }
+  }
+  html = menu()
+  assert.doesNotMatch(html, /example\/work\/private/)
+  assert.doesNotMatch(html, /example\\private/)
+  assert.equal(state.accountOptions.enabled, false)
+
+  state.settingsQuery = {
+    isFetching: false, isPending: false, isError: false, error: null,
+    data: { ...shownFlags(), context_file_paths: 'sideways' }
+  }
+  html = menu()
+  assert.doesNotMatch(html, /<p[^>]*title=/)
+  assert.doesNotMatch(html, /example\/work\/private/)
+  assert.equal(state.accountOptions.enabled, false)
+})
+
+test('reads account limits on menu open and again on focus only in that mode', async () => {
+  const { state, menu } = await loadPlugin()
+  settleChat(state)
+  menu()
+  assert.equal(state.accountOptions.enabled, true)
+  assert.equal(state.accountOptions.refetchOnMount, 'always')
+  assert.equal(state.accountOptions.refetchOnWindowFocus, false)
+  assert.equal(state.accountOptions.refetchInterval, undefined)
+  assert.equal(state.cursorOptions.refetchOnWindowFocus, false)
+
+  state.settingsQuery.data = { ...shownFlags(), account_refresh_mode: 'on menu open and focus' }
+  menu()
+  assert.equal(state.accountOptions.enabled, true)
+  assert.equal(state.accountOptions.refetchOnWindowFocus, true)
+  assert.equal(state.cursorOptions.refetchOnWindowFocus, false)
+  assert.match(menu(), /Weekly/)
+})
+
+test('drops a fetched account snapshot when refresh mode switches to manual', async () => {
+  const { state, menu } = await loadPlugin()
+  settleChat(state)
+  state.accountQuery = {
+    isFetching: false, isPending: false, isError: false, isFetched: true,
+    data: { account_lines: ['Provider: openai-codex (Pro)', 'Weekly: 80% remaining (20% used)'] }
+  }
+  state.settingsQuery.data = { ...shownFlags(), account_refresh_mode: 'on menu open' }
+  assert.match(menu(), /Weekly/)
+  const autoKey = Array.from(state.accountOptions.queryKey)
+  state.accountCacheKey = autoKey.join('\0')
+  assert.equal(state.accountOptions.enabled, true)
+
+  state.settingsQuery.data = { ...shownFlags(), account_refresh_mode: 'manual' }
+  const html = menu()
+  const manualKey = Array.from(state.accountOptions.queryKey)
+  assert.notDeepEqual(manualKey, autoKey)
+  assert.equal(manualKey.at(-1), 'manual')
+  assert.equal(autoKey.at(-1), 'on menu open')
+  assert.equal(state.accountOptions.enabled, false)
+  assert.equal(state.accountOptions.refetchOnWindowFocus, false)
+  assert.match(html, /Select Refresh to load account limits/)
+  assert.doesNotMatch(html, /Weekly/)
+  assert.doesNotMatch(html, /openai-codex/)
+  assert.equal(state.accountRefetches, 0)
+
+  state.owner = { connectionId: 'remote-b', profile: 'work' }
+  state.routes = [{ connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' }]
+  state.settingsQuery.data = { ...shownFlags(), account_refresh_mode: 'on menu open' }
+  const isolated = menu()
+  const otherKey = Array.from(state.accountOptions.queryKey)
+  assert.equal(otherKey[2], 'remote-b')
+  assert.equal(otherKey[3], 'work')
+  assert.equal(otherKey.at(-1), 'on menu open')
+  assert.notDeepEqual(otherKey, manualKey)
+  assert.notDeepEqual(otherKey, autoKey)
+  assert.doesNotMatch(isolated, /Weekly/)
+  assert.doesNotMatch(isolated, /openai-codex/)
+})
+
+test('asks for Refresh before reading account limits in manual mode', async () => {
+  const { state, menu } = await loadPlugin()
+  settleChat(state)
+  state.settingsQuery.data = { ...shownFlags(), account_refresh_mode: 'manual' }
+  let html = menu()
+  assert.equal(state.accountOptions.enabled, false)
+  assert.equal(state.accountOptions.refetchOnWindowFocus, false)
+  assert.equal(state.accountOptions.refetchInterval, undefined)
+  assert.match(html, /Select Refresh to load account limits/)
+  assert.doesNotMatch(html, /Loading account limits/)
+  assert.doesNotMatch(html, /Weekly/)
+  assert.doesNotMatch(html, /0% remaining/)
+  assert.match(html, /25% used/)
+  const refresh = state.items.find(item => menuText(item.children) === 'Refresh')
+  refresh.onSelect({ preventDefault() {} })
+  assert.equal(state.accountRefetches, 1)
+  assert.equal(state.refetches, 1)
+  state.accountQuery = {
+    isFetching: false, isPending: false, isError: false, isFetched: true,
+    data: { account_lines: ['Provider: openai-codex (Pro)', 'Weekly: 80% remaining (20% used)'] }
+  }
+  html = menu()
+  assert.match(html, /Weekly/)
+  assert.doesNotMatch(html, /Select Refresh to load account limits/)
+
+  state.accountRefetches = 0
+  state.settingsQuery.data = {
+    show_openai_codex: false, show_anthropic: false, show_openrouter: false, show_other: false,
+    account_refresh_mode: 'manual'
+  }
+  menu()
+  state.items.find(item => menuText(item.children) === 'Refresh').onSelect({ preventDefault() {} })
+  assert.equal(state.accountRefetches, 0)
+  assert.equal(state.accountOptions.enabled, false)
+  assert.equal(state.cursorOptions.enabled, false)
+})
+
+test('drops account rows when the focused owner changes', async () => {
+  const { state, menu } = await loadPlugin()
+  settleChat(state)
+  assert.match(menu(), /Weekly/)
+  assert.match(menu(), /openai-codex/)
+  state.owner = { connectionId: 'remote-b', profile: 'work' }
+  state.routes = [{ connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' }]
+  state.accountQuery = {
+    isFetching: false, isPending: true, isError: false,
+    data: { account_lines: ['Provider: openai-codex (Pro)', 'Weekly: 80% remaining (20% used)'] }
+  }
+  const html = menu()
+  assert.deepEqual(Array.from(state.accountOptions.queryKey), [
+    'context-window-visualizer', 'account-limits', 'remote-b', 'work', 'runtime-1', 'example-model-200k', 'on menu open'
+  ])
+  assert.doesNotMatch(html, /Weekly/)
+  assert.doesNotMatch(html, /openai-codex/)
+  assert.match(html, /25% used/)
+  assert.equal(state.cursorOptions.queryKey[2], 'remote-b')
+  assert.equal(state.settingsOptions.queryKey[3], 'work')
+})
+
+test('hides estimated composition without hiding occupancy or files', async () => {
+  const { state, menu, registrations } = await loadPlugin()
+  state.settingsQuery.data = { ...shownFlags(), show_estimated_composition: false }
+  state.query.data = {
+    model: 'example-model-200k', context_max: 200000, context_used: 50000,
+    context_percent: 25, context_estimated: false,
+    categories: [{ id: 'conversation', label: 'Conversation', tokens: 30000 }],
+    context_files: privateFiles
+  }
+  menu()
+  expandFiles(state)
+  const html = menu()
+  assert.match(html, /example-model-200k/)
+  assert.match(html, /25% used/)
+  assert.match(html, /role="progressbar"/)
+  assert.doesNotMatch(html, /Estimated composition/)
+  assert.doesNotMatch(html, /Category sizes are rough/)
+  assert.doesNotMatch(html, /Conversation/)
+  assert.match(html, /AGENTS\.md/)
+  assert.match(html, /Loaded/)
+  assert.match(html, /Account limits/)
+  const footer = renderToStaticMarkup(registrations[0].data.label)
+  assert.match(footer, /25%/)
+  assert.doesNotMatch(footer, /Estimated composition/)
+
+  state.settingsQuery.data = { ...shownFlags(), show_estimated_composition: true }
+  assert.match(menu(), /Estimated composition/)
+  assert.match(menu(), /Conversation/)
+})
+
+test('uses display defaults for an old schema and rejects invalid enums', async () => {
+  const { state, menu } = await loadPlugin()
+  settleChat(state)
+  state.query.data.context_files = privateFiles
+  menu()
+  state.pluginsPayload = {
+    plugins: [{
+      key: 'context-window-visualizer',
+      settings_schema: [
+        ...settingsSchema(shownFlags()),
+        { key: 'account_refresh_mode', type: 'enum', value: 'manual', default: 'on menu open', choices: ['manual', 'on menu open', 'on menu open and focus'] },
+        { key: 'context_file_paths', type: 'enum', value: 'full path', default: 'filename only', choices: ['hidden', 'filename only', 'full path'] },
+        { key: 'show_estimated_composition', type: 'boolean', value: false, default: true }
+      ]
+    }]
+  }
+  assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), {
+    ...shownFlags(),
+    account_refresh_mode: 'manual',
+    context_file_paths: 'full path',
+    show_estimated_composition: false
+  })
+  state.pluginsPayload = {
+    profile: 'work',
+    plugins: [{
+      key: 'context-window-visualizer',
+      settings_schema: [
+        ...settingsSchema(shownFlags()),
+        { key: 'context_file_paths', type: 'enum', value: 'full path', default: 'filename only' }
+      ]
+    }]
+  }
+  await assert.rejects(() => state.settingsOptions.queryFn(), /profile mismatch/)
+  state.pluginsPayload = {
+    plugins: [{
+      key: 'context-window-visualizer',
+      settings_schema: [
+        ...settingsSchema(shownFlags()),
+        { key: 'account_refresh_mode', type: 'enum', value: 'always', default: 'on menu open' },
+        { key: 'context_file_paths', type: 'enum', value: 'full path', default: 'filename only' }
+      ]
+    }]
+  }
+  await assert.rejects(() => state.settingsOptions.queryFn(), /invalid account_refresh_mode/)
+  state.pluginsPayload = {
+    plugins: [{
+      key: 'context-window-visualizer',
+      settings_schema: [
+        ...settingsSchema(shownFlags()),
+        { key: 'context_file_paths', type: 'enum', value: '/tmp/private', default: 'filename only' }
+      ]
+    }]
+  }
+  await assert.rejects(() => state.settingsOptions.queryFn(), /invalid context_file_paths/)
+  state.pluginsPayload = {
+    plugins: [{
+      key: 'context-window-visualizer',
+      settings_schema: [
+        ...settingsSchema(shownFlags()),
+        { key: 'show_estimated_composition', type: 'boolean', value: 'yes', default: true }
+      ]
+    }]
+  }
+  await assert.rejects(() => state.settingsOptions.queryFn(), /non-boolean/)
+
+  state.settingsQuery.data = {
+    ...shownFlags(), account_refresh_mode: 'manual', context_file_paths: 'filename only',
+    show_estimated_composition: false
+  }
+  state.owner = { connectionId: 'remote-b', profile: 'work' }
+  state.routes = [{ connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' }]
+  menu()
+  expandFiles(state)
+  const html = menu()
+  assert.equal(state.settingsOptions.queryKey[2], 'remote-b')
+  assert.equal(state.settingsOptions.queryKey[3], 'work')
+  assert.equal(state.accountOptions.enabled, false)
+  assert.doesNotMatch(html, /example\/work\/private/)
+  assert.doesNotMatch(html, /Estimated composition/)
+  assert.match(html, /25% used/)
+  assert.match(html, /Select Refresh to load account limits/)
+})
+
+test('a disabled React Query observer fetches when Refresh calls refetch', async () => {
+  const entry = [
+    join(desktopRoot, 'node_modules/@tanstack/query-core/package.json'),
+    join(desktopRoot, '../../node_modules/@tanstack/query-core/package.json')
+  ].find(path => existsSync(path))
+  assert.ok(entry, 'installed @tanstack/query-core was not found beside HERMES_DESKTOP_ROOT')
+  const { QueryClient, QueryObserver } = createRequire(entry)('@tanstack/query-core')
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  let calls = 0
+  const observer = new QueryObserver(client, {
+    queryKey: ['context-window-visualizer', 'account-limits', 'manual'],
+    queryFn: async () => { calls += 1; return { account_lines: ['Weekly: 80% remaining (20% used)'] } },
+    enabled: false,
+    retry: false
+  })
+  assert.equal(observer.getCurrentResult().isFetched, false)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(calls, 0)
+  assert.equal(observer.getCurrentResult().fetchStatus, 'idle')
+  const result = await observer.refetch()
+  assert.equal(calls, 1)
+  assert.equal(result.isFetched, true)
+  assert.equal(result.status, 'success')
+  assert.deepEqual(result.data, { account_lines: ['Weekly: 80% remaining (20% used)'] })
+  client.clear()
 })
