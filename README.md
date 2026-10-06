@@ -1,6 +1,6 @@
 # Context Window Visualizer for Hermes Desktop
 
-See how full the **focused chat’s model context window** is in the Hermes Desktop status bar. Open the **Context** menu for an estimated breakdown of what occupies it, optional context-file details, and any account-limit windows Hermes reports for that chat. This is a small, Desktop-only community plugin—not a quota manager or a replacement for Hermes’s built-in Context Usage control.
+See how full the **focused chat’s model context window** is in the Hermes Desktop status bar. Open the **Context** menu for an estimated breakdown, optional context-file details, account-limit windows Hermes reports for that chat, and opt-in cached Cursor allowance from the separate Quota plugin. This Desktop-only community plugin does not fetch or refresh Cursor quotas itself and does not replace Hermes’s built-in Context Usage control.
 
 ## Contents
 
@@ -17,14 +17,14 @@ See how full the **focused chat’s model context window** is in the Hermes Desk
 
 ## Install
 
-**Requirements:** Hermes Desktop with a compatible backend and Desktop Plugin SDK. The manifest declares `requires_hermes: ">=0.21.5"`; older backends may not provide `session.context_breakdown`. The plugin does not run in the CLI, TUI, or web dashboard. No Python package, API key, build step, or separate service is required for the plugin.
+**Requirements:** Hermes Desktop with a compatible backend and Desktop Plugin SDK. The manifest declares `requires_hermes: ">=0.21.5"`; older backends may not provide `session.context_breakdown`. The **visualization** runs only in Desktop (not the CLI, TUI, or web dashboard), but provider-visibility settings can also be changed with `hermes config`. No Python package, API key, build step, or separate service is required for the plugin.
 
 ### Install from Git
 
 From Hermes Desktop:
 
 1. In Hermes Desktop, open **Capabilities → Plugins → Install from Git**.
-2. Enter `https://github.com/zufpi/hermes-context-window-visualizer` and select the **Desktop UI** component. Review the source and destination in the confirmation screen before installing.
+2. Enter `https://github.com/zufpi/hermes-context-window-visualizer`. Keep **Agent plugin** selected for the chat’s owning backend/profile (it supplies the `plugin.yaml` settings schema), and **Desktop UI** selected for the machine running the app. The install dialog defaults to both; review both destinations before confirming. If the chat uses a remote backend, the Agent component goes there while the Desktop UI stays local.
 3. Check that **Context Window Visualizer** is enabled in the **Desktop** column of **Capabilities → Plugins**. Its **Context** item appears in the bottom status bar; right-click the bar and use **Show in status bar** if the item is hidden.
 
 A Git install is a custom-source install, **not a reviewed catalog install or an immutable catalog pin**. Inspect the code you install. If the menu does not appear after installation, use **Cmd/Ctrl+K → Reload desktop plugins**. A plugin that you previously disabled remains disabled until you re-enable it.
@@ -67,7 +67,7 @@ To remove a manual copy, disable it in **Capabilities → Plugins** and remove i
 - **Account limits:** When a settled breakdown is available and at least one of the four Hermes-provider switches is on, opening the menu calls `session.usage` once for the same focused runtime session. The menu displays the provider label and only valid remaining-percentage windows in Hermes’s `account_lines`, with any returned reset detail. These bars are **remaining provider allowance**, not context occupancy or absolute remaining tokens. A provider might report a weekly window but no shorter one; the plugin never fabricates a missing window, token balance, or quota. If that returned provider’s switch is off, the whole account section, including its label, is omitted. The context meter stays. If Hermes cannot provide the data, the menu reports that it is unavailable or that no windows were reported. Other text lines from `session.usage` are not rendered.
 - **Cursor limits (Quota cache):** A separate, default-off section shows only validated percentage windows from the optional Quota plugin's cached Cursor entry on the focused chat's profile. It is independent of the chat's model, Hermes account limits, and the context meter. The menu's **Refresh** button re-reads Quota's cache; it does not cause a Quota refresh or contact Cursor. See [Cursor via Quota cache](#cursor-via-quota-cache).
 
-Send a first message to initialize a new chat if its context is unavailable. While a turn is in progress, the chip and menu may show the focused session’s streamed usage instead of a stale breakdown; the categorized breakdown waits until the turn finishes. **Refresh** re-reads the context breakdown and, when eligible, account limits. There is **no timed background poll**: reopening the menu can re-query limits, window focus can re-query while the menu is mounted, and relevant session events reset cached reads. An account-limit lookup may cause Hermes to contact the provider’s account endpoint; it does **not** send a model prompt.
+Send a first message to initialize a new chat if its context is unavailable. While a turn is in progress, the chip and menu may show the focused session’s streamed usage instead of a stale breakdown; the categorized breakdown waits until the turn finishes. **Refresh** re-reads the context breakdown, eligible Hermes account limits, and the Cursor cache when enabled. There is **no timed background poll**: reopening the menu can re-query these sources, window focus can re-query Hermes account limits while the menu is mounted (not Cursor), and relevant session events reset cached context and account reads. A Hermes account-limit lookup may cause Hermes to contact that chat’s provider account endpoint; it does **not** send a model prompt. The Cursor cache read itself does not contact Cursor.
 
 The backend’s context-file manifest was added in [#91272](https://github.com/NousResearch/hermes-agent/pull/91272) and its built-in presentation proposed in [#126219](https://github.com/NousResearch/hermes-agent/pull/126219).
 
@@ -91,13 +91,13 @@ Five booleans in `plugin.yaml` control visibility. The four Hermes-provider swit
 
 | Switch | Effect |
 | --- | --- |
-| `show_openai_codex` | `openai-codex` |
-| `show_anthropic` | `anthropic` |
-| `show_openrouter` | `openrouter` |
-| `show_other` | any other id, including `nous` and custom `fetch_account_usage` providers |
-| `show_cursor` | Shows a **separate** Cursor cache section when true; this is not an alternate `session.usage` provider or a context percentage. Default: false. |
+| `show_openai_codex` | Show Hermes account limits when the returned provider id is `openai-codex`. |
+| `show_anthropic` | Show Hermes account limits when the returned provider id is `anthropic`. |
+| `show_openrouter` | Show Hermes account limits when the returned provider id is `openrouter`. |
+| `show_other` | Show Hermes account limits for any other id **except exact `cursor`**, including `nous` and custom `fetch_account_usage` providers. |
+| `show_cursor` | Show a **separate** Cursor cache section; also control visibility if Hermes itself returns exact provider id `cursor` in a `session.usage` response already requested for the focused chat. This switch does not cause another `session.usage` request. Default: false. |
 
-Hermes may render `Provider: <id> (<plan>)`. The plan suffix is ignored; the id is compared exactly. An id that only contains one of those names stays on `show_other`. When all **four Hermes-provider switches** are off, the menu does not call `session.usage`, even when `show_cursor` is on. When only one of those four is disabled and another remains enabled, `session.usage` still queries the focused chat’s provider before hiding that bar. While settings load or the settings read fails closed, it does not query either source. If `plugins.manage` is unknown or the package has no schema, the four existing account switches retain their on fallback, but **Cursor stays off**.
+Hermes may render `Provider: <id> (<plan>)`. The plan suffix is ignored; the id is compared exactly. An id that only contains one of those names stays on `show_other`; exact `cursor` uses `show_cursor`. When all **four Hermes-provider switches** are off, the menu does not call `session.usage`, even when `show_cursor` is on. When only one of those four is disabled and another remains enabled, `session.usage` still queries the focused chat’s provider before hiding that bar. While settings load or the settings read fails closed, it does not query either source. If `plugins.manage` is unknown or the package has no schema, the four existing account switches retain their on fallback, but **Cursor cache display stays off**.
 
 The values live at `plugins.entries.context-window-visualizer.settings.<key>` on the Hermes home of the profile that owns the chat. They are ordinary booleans. Run the command on that machine. For a non-default profile, prefix `hermes -p <profile>`.
 
@@ -128,7 +128,7 @@ A remote chat’s settings and `session.usage` both come from the owning backend
 
 Cursor has no documented public personal-allowance API. This plugin **does not** read Cursor login data, call an undocumented Cursor endpoint, or refresh quotas. Instead, after `show_cursor` is explicitly enabled it asks Hermes to run the optional [Quota plugin](https://github.com/rarf/hermes-quota-plugin)'s `quota status --json --cached` command on the focused chat's owning backend/profile, only while the Context menu is open. The read-only `--cached` path uses Quota's existing snapshot. The popup shows at most six valid Cursor percentage windows and their reset timestamps, separately from model context and the focused chat's provider allowance. It shows stale/unavailable/empty status instead of inventing zero or current data. The cache must be no older than 30 minutes.
 
-Install and enable Quota **on the backend/profile that owns the focused chat**, and let Quota manage its own cache refresh. Quota itself may read a local Cursor login and call an **undocumented Cursor endpoint** when *it* refreshes; review its separate source, settings, and privacy policy before enabling that behavior. This checkbox controls only display here—it does **not** opt Quota into or out of credential use, network access, or scheduled refresh. No Quota installation is needed when the checkbox stays off. To populate a missing or stale cache, use Quota's own refresh control, then reopen Context; the Context menu's **Refresh** only re-reads the snapshot. If Quota is missing, disabled, incompatible, or its cached Cursor entry is unavailable, the popup reports unavailability rather than a percentage.
+Install and enable Quota **on the backend/profile that owns the focused chat**, and let Quota manage its own cache refresh. Quota's [install instructions](https://github.com/rarf/hermes-quota-plugin#install) call for a complete Desktop restart after installing its backend and a first `hermes quota refresh` for each profile. Quota itself may read a local Cursor login and call an **undocumented Cursor endpoint** when *it* refreshes; review its separate source, settings, and privacy policy before enabling that behavior. This checkbox controls only display here—it does **not** opt Quota into or out of credential use, network access, or scheduled refresh. No Quota installation is needed when the checkbox stays off. To populate a missing or stale cache, use Quota's own refresh control, then reopen Context; the Context menu's **Refresh** only re-reads the snapshot. If Quota is missing, disabled, incompatible, or its cached Cursor entry is unavailable, the popup reports unavailability rather than a percentage.
 
 ## Focused chats, profiles, and remote gateways
 
@@ -182,7 +182,7 @@ For a Hermes installation with the validation command available, validate this *
 hermes plugins validate /path/to/hermes-context-window-visualizer --install-deps
 ```
 
-The repository’s GitHub Actions workflow is configured to run syntax, rendering, and plugin-validation checks against pinned Hermes sources on push/PR; that configuration is **not evidence of a completed CI run**. Test actual Desktop UI behavior, especially focus switching and remote routes, on a compatible build—mock rendering tests are not an end-to-end provider test.
+The repository’s [GitHub Actions workflow](https://github.com/zufpi/hermes-context-window-visualizer/actions/workflows/test.yml) runs syntax, rendering, and plugin-validation checks on push/PR. It checks out Hermes at the configured `v2026.9.24` tag and uses a SHA-pinned validation action; inspect the workflow’s latest run for its **actual** result. Rendering tests use synthetic RPC responses, not live provider accounts. Test actual Desktop UI behavior, especially focus switching and remote routes, on a compatible build.
 
 **Catalog status:** This is a standalone community repository, **not** an approved or listed Hermes catalog plugin. Catalog submission, review, and SHA-pinned distribution are separate processes; see [Hermes’s catalog rules](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission). No catalog submission is implied here.
 
