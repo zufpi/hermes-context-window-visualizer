@@ -1075,7 +1075,12 @@ test('Cursor renders only bounded windows, never cache metadata or malformed res
   let html = menu()
   assert.match(html, /Cursor limits \(Quota cache\)/)
   assert.match(html, /75% remaining/)
-  assert.match(html, /Resets 2030-03-04T12:00:00\.000Z/)
+  const localReset = new Intl.DateTimeFormat(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+  }).format(new Date('2030-03-04T12:00:00Z'))
+  assert.ok(html.includes(`Resets ${localReset}`))
+  assert.doesNotMatch(html, /2030-03-04T12:00:00(?:\.000)?Z/)
   assert.doesNotMatch(html, /SECRET_|onerror|javascript:/)
   state.cursorQuery.data = { status: 'stale', windows: [] }
   html = menu()

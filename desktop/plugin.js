@@ -508,6 +508,16 @@ function AccountLimitsVisual({ account, loading, error, manual, t }) {
   })
 }
 
+function formatCursorReset(resetAt) {
+  if (typeof resetAt !== 'string' || !/^\d{4}-\d\d-\d\dT/.test(resetAt)) return null
+  const date = new Date(resetAt)
+  if (!Number.isFinite(date.getTime())) return null
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+  }).format(date)
+}
+
 function CursorLimitsVisual({ data, loading, error, t }) {
   const windows = !loading && !error && data?.status === 'ready' ? data.windows : []
   const message = loading ? t('cursorLoading') : error ? t('cursorUnavailable') :
@@ -518,22 +528,25 @@ function CursorLimitsVisual({ data, loading, error, t }) {
     className: 'mx-2 flex flex-col gap-2 border-t border-(--ui-stroke-tertiary) pt-3',
     children: [
       jsx('p', { className: 'font-medium text-foreground', children: t('cursorLimits') }),
-      ...windows.map((window, index) => jsxs('div', { className: 'flex flex-col gap-1', children: [
-        jsxs('div', { className: 'flex items-baseline justify-between gap-2', children: [
-          jsx('span', { className: 'text-(--ui-text-secondary)', children: window.label }),
-          jsx('span', { className: 'tabular-nums text-foreground', children: t('remaining', window.remaining) })
-        ] }),
-        jsx('div', {
-          role: 'progressbar', 'aria-label': `${window.label} ${t('cursorLimits')}`,
-          'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': window.remaining,
-          className: 'h-2 w-full overflow-hidden rounded-full',
-          style: { background: 'var(--ui-stroke-tertiary)' },
-          children: jsx('div', { className: 'h-full',
-            style: { width: `${window.remaining}%`, background: 'var(--ui-accent)' } })
-        }),
-        window.resetAt ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
-          children: t('cursorReset', window.resetAt) }) : null
-      ] }, `${window.label}:${index}`)),
+      ...windows.map((window, index) => {
+        const resetTime = formatCursorReset(window.resetAt)
+        return jsxs('div', { className: 'flex flex-col gap-1', children: [
+          jsxs('div', { className: 'flex items-baseline justify-between gap-2', children: [
+            jsx('span', { className: 'text-(--ui-text-secondary)', children: window.label }),
+            jsx('span', { className: 'tabular-nums text-foreground', children: t('remaining', window.remaining) })
+          ] }),
+          jsx('div', {
+            role: 'progressbar', 'aria-label': `${window.label} ${t('cursorLimits')}`,
+            'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': window.remaining,
+            className: 'h-2 w-full overflow-hidden rounded-full',
+            style: { background: 'var(--ui-stroke-tertiary)' },
+            children: jsx('div', { className: 'h-full',
+              style: { width: `${window.remaining}%`, background: 'var(--ui-accent)' } })
+          }),
+          resetTime ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
+            children: t('cursorReset', resetTime) }) : null
+        ] }, `${window.label}:${index}`)
+      }),
       !windows.length ? jsx('p', { role: 'status', className: 'text-(--ui-text-secondary)', children: message }) : null
     ]
   })
