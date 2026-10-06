@@ -1,4 +1,5 @@
 import {
+  Codicon,
   DropdownMenuItem,
   STATUSBAR_AREAS,
   host,
@@ -26,6 +27,12 @@ const translations = {
     limitsEmpty: 'No account-limit windows reported for this chat.',
     limitsLoading: 'Loading account limits…',
     limitsError: 'Account limits unavailable. Try Refresh.',
+    cursorLimits: 'Cursor limits (Quota cache)',
+    cursorLoading: 'Loading cached Cursor limits…',
+    cursorEmpty: 'No Cursor allowance windows in the Quota cache.',
+    cursorStale: 'Cursor cache is stale. Refresh it in Quota, then try again.',
+    cursorUnavailable: 'Cursor limits unavailable. Check Quota on this profile.',
+    cursorReset: time => `Resets ${time}`,
     composition: 'Estimated composition',
     compositionNote: 'Category sizes are rough estimates, not measured shares of the window.',
     categories: {
@@ -44,6 +51,7 @@ const translations = {
     empty: 'No context files were considered for this chat.',
     failed: 'Could not load the context-file breakdown. Check the connection or try again.',
     refresh: 'Refresh',
+    pluginSettings: 'Plugin settings',
     status: {
       blocked: 'Not loaded — blocked by the prompt-injection scan',
       empty: 'Not loaded — empty file',
@@ -68,6 +76,12 @@ const translations = {
     limitsEmpty: 'Für diesen Chat wurden keine Kontolimits gemeldet.',
     limitsLoading: 'Kontolimits werden geladen…',
     limitsError: 'Kontolimits nicht verfügbar. Bitte aktualisieren.',
+    cursorLimits: 'Cursor-Limits (Quota-Cache)',
+    cursorLoading: 'Cursor-Limits aus dem Cache werden geladen…',
+    cursorEmpty: 'Keine Cursor-Kontingentfenster im Quota-Cache.',
+    cursorStale: 'Cursor-Cache ist veraltet. Aktualisiere ihn in Quota und versuche es erneut.',
+    cursorUnavailable: 'Cursor-Limits nicht verfügbar. Prüfe Quota für dieses Profil.',
+    cursorReset: time => `Zurücksetzung: ${time}`,
     composition: 'Geschätzte Zusammensetzung',
     compositionNote: 'Kategoriegrößen sind grobe Schätzungen, keine gemessenen Anteile am Fenster.',
     categories: {
@@ -86,6 +100,7 @@ const translations = {
     empty: 'Für diesen Chat wurden keine Kontextdateien berücksichtigt.',
     failed: 'Kontextdateien konnten nicht geladen werden. Prüfe die Verbindung oder versuche es erneut.',
     refresh: 'Aktualisieren',
+    pluginSettings: 'Plugin-Einstellungen',
     status: {
       blocked: 'Nicht geladen — von der Prompt-Injection-Prüfung blockiert',
       empty: 'Nicht geladen — leere Datei',
@@ -302,14 +317,16 @@ function accountLimitRows(lines) {
   return { provider, windows, unavailable }
 }
 
-const SETTING_KEYS = ['show_openai_codex', 'show_anthropic', 'show_openrouter', 'show_other']
+const BUILTIN_SETTING_KEYS = ['show_openai_codex', 'show_anthropic', 'show_openrouter', 'show_other']
+const SETTING_KEYS = [...BUILTIN_SETTING_KEYS, 'show_cursor']
 const PROVIDER_SETTING = {
   'openai-codex': 'show_openai_codex',
   anthropic: 'show_anthropic',
   openrouter: 'show_openrouter'
 }
 const ALL_VISIBLE = {
-  show_openai_codex: true, show_anthropic: true, show_openrouter: true, show_other: true
+  show_openai_codex: true, show_anthropic: true, show_openrouter: true, show_other: true,
+  show_cursor: false
 }
 
 function providerId(label) {
@@ -323,14 +340,16 @@ function settingsPhase(query) {
     return code === -32601 ? 'fallback' : 'closed'
   }
   const data = query.data
-  if (!data || SETTING_KEYS.some(key => typeof data[key] !== 'boolean')) return 'closed'
-  return SETTING_KEYS.every(key => data[key] === false) ? 'off' : 'ready'
+  if (!data || BUILTIN_SETTING_KEYS.some(key => typeof data[key] !== 'boolean') ||
+      (data.show_cursor !== undefined && typeof data.show_cursor !== 'boolean')) return 'closed'
+  return BUILTIN_SETTING_KEYS.every(key => data[key] === false) && data.show_cursor !== true ? 'off' : 'ready'
 }
 
 function providerShown(lines, phase, data) {
   if (phase === 'fallback') return true
   const id = providerId(accountLimitRows(lines).provider)
   if (!id) return true
+  if (id === 'cursor') return data?.show_cursor === true
   const key = PROVIDER_SETTING[id] || 'show_other'
   return data?.[key] === true
 }
@@ -347,7 +366,7 @@ function flagsFromList(payload, route) {
   for (const key of SETTING_KEYS) {
     const entry = schema.find(item => item && item.key === key)
     const stored = entry && entry.value != null ? entry.value : entry?.default
-    if (!entry || stored == null) values[key] = true
+    if (!entry || stored == null) values[key] = ALL_VISIBLE[key]
     else if (typeof stored !== 'boolean') throw new Error('non-boolean provider setting')
     else values[key] = stored
   }
@@ -357,6 +376,49 @@ function flagsFromList(payload, route) {
 function providerSettings(route) {
   return host.requestProfile(route, 'plugins.manage', { action: 'list', profile: route.profile }, 12_000)
     .then(payload => flagsFromList(payload, route))
+}
+
+// The optional Quota plugin owns fetching and credentials. Its --cached CLI
+// path reads a local snapshot only. Discard all other provider/account fields
+// before returning a value to React Query; do not cache the raw CLI response.
+function parseCursorCache(output) {
+  if (typeof output !== 'string' || output.length > 48_000) throw new Error('invalid Cursor cache')
+  const payload = JSON.parse(output)
+  const age = payload?.age_s
+  if (typeof age !== 'number' || !Number.isFinite(age) || age < 0 || age > 1800) {
+    return { status: 'stale', windows: [] }
+  }
+  const cursor = payload?.providers?.cursor
+  if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor) || cursor.unavailable_reason) {
+    return { status: 'unavailable', windows: [] }
+  }
+  const windows = (Array.isArray(cursor.windows) ? cursor.windows : []).slice(0, 6).flatMap(window => {
+    if (!window || typeof window.label !== 'string' ||
+        !/^[A-Za-z][A-Za-z0-9 .-]{0,39}$/.test(window.label) ||
+        typeof window.used_percent !== 'number' || !Number.isFinite(window.used_percent) ||
+        window.used_percent < 0 || window.used_percent > 100) return []
+    const reset = window.reset_at
+    const resetAt = typeof reset === 'string' && reset.length <= 50 &&
+      /^\d{4}-\d\d-\d\dT/.test(reset) && Number.isFinite(Date.parse(reset))
+      ? new Date(reset).toISOString() : null
+    return [{ label: window.label, remaining: Math.round(100 - window.used_percent), resetAt }]
+  })
+  return { status: windows.length ? 'ready' : 'empty', windows }
+}
+
+async function readCursorCache(route) {
+  try {
+    const response = await host.requestProfile(route, 'cli.exec', {
+      argv: ['--profile', route.targetProfile, 'quota', 'status', '--json', '--cached'],
+      timeout: 10
+    }, 12_000)
+    if (response?.blocked || response?.code !== 0) throw new Error('cache unavailable')
+    return parseCursorCache(response.output)
+  } catch {
+    // Gateway/CLI diagnostics may contain paths or account details. Never
+    // render or cache their text, even when the optional plugin is missing.
+    throw new Error('Cursor cache unavailable')
+  }
 }
 
 function AccountLimitsVisual({ account, loading, error, t }) {
@@ -383,6 +445,37 @@ function AccountLimitsVisual({ account, loading, error, t }) {
       ] }, `${window.label}:${index}`)),
       !windows.length ? jsx('p', { role: 'status', className: 'text-(--ui-text-secondary)',
         children: loading ? t('limitsLoading') : error || unavailable ? t('limitsError') : t('limitsEmpty') }) : null
+    ]
+  })
+}
+
+function CursorLimitsVisual({ data, loading, error, t }) {
+  const windows = !loading && !error && data?.status === 'ready' ? data.windows : []
+  const message = loading ? t('cursorLoading') : error ? t('cursorUnavailable') :
+    data?.status === 'stale' ? t('cursorStale') :
+    data?.status === 'unavailable' ? t('cursorUnavailable') : t('cursorEmpty')
+  return jsxs('section', {
+    'aria-label': t('cursorLimits'),
+    className: 'mx-2 flex flex-col gap-2 border-t border-(--ui-stroke-tertiary) pt-3',
+    children: [
+      jsx('p', { className: 'font-medium text-foreground', children: t('cursorLimits') }),
+      ...windows.map((window, index) => jsxs('div', { className: 'flex flex-col gap-1', children: [
+        jsxs('div', { className: 'flex items-baseline justify-between gap-2', children: [
+          jsx('span', { className: 'text-(--ui-text-secondary)', children: window.label }),
+          jsx('span', { className: 'tabular-nums text-foreground', children: t('remaining', window.remaining) })
+        ] }),
+        jsx('div', {
+          role: 'progressbar', 'aria-label': `${window.label} ${t('cursorLimits')}`,
+          'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': window.remaining,
+          className: 'h-2 w-full overflow-hidden rounded-full',
+          style: { background: 'var(--ui-stroke-tertiary)' },
+          children: jsx('div', { className: 'h-full',
+            style: { width: `${window.remaining}%`, background: 'var(--ui-accent)' } })
+        }),
+        window.resetAt ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
+          children: t('cursorReset', window.resetAt) }) : null
+      ] }, `${window.label}:${index}`)),
+      !windows.length ? jsx('p', { role: 'status', className: 'text-(--ui-text-secondary)', children: message }) : null
     ]
   })
 }
@@ -473,7 +566,21 @@ function ContextFilesMenu() {
   // A draft's session.usage falls back to the profile's configured provider,
   // which may differ from the model this chat will ultimately run.
   const eligible = Boolean(sessionId && route && Array.isArray(breakdown?.context_files))
-  const accountReady = eligible && (phase === 'ready' || phase === 'fallback')
+  const builtinsEnabled = phase === 'fallback' || (phase === 'ready' &&
+    BUILTIN_SETTING_KEYS.some(key => settings.data?.[key] === true))
+  const accountReady = eligible && builtinsEnabled
+  const cursorReady = Boolean(sessionId && route && typeof route.targetProfile === 'string' &&
+    route.targetProfile.length && phase === 'ready' && settings.data?.show_cursor === true)
+  const cursor = useQuery({
+    queryKey: [ID, 'cursor-limits', owner?.connectionId, owner?.profile],
+    queryFn: () => readCursorCache(route),
+    enabled: cursorReady,
+    retry: false,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: false
+  })
   const account = useQuery({
     queryKey: [ID, 'account-limits', owner?.connectionId, owner?.profile, sessionId, breakdown?.model],
     queryFn: () => host.requestProfile(route, 'session.usage', { session_id: sessionId }, 25_000),
@@ -500,12 +607,30 @@ function ContextFilesMenu() {
   return jsxs('div', {
     className: 'flex w-80 max-w-[min(80vw,24rem)] flex-col gap-2 p-2 text-xs',
     children: [
-      jsx('div', { className: 'px-2 font-medium text-foreground', children: t('title') }),
+      jsxs('div', {
+        'data-slot': 'context-menu-header',
+        className: 'flex items-center justify-between gap-2 px-2',
+        children: [
+          jsx('span', { className: 'font-medium text-foreground', children: t('title') }),
+          jsx(DropdownMenuItem, {
+            'aria-label': t('pluginSettings'),
+            className: 'size-8 shrink-0 justify-center p-0',
+            onSelect: () => {
+              host.navigate('/capabilities?tab=plugins&plugin=' + encodeURIComponent(ID))
+            },
+            children: jsx(Codicon, { name: 'settings-gear', 'aria-hidden': true })
+          })
+        ]
+      }),
       jsx(ContextWindowVisual, { breakdown, usage: busy ? focusedUsage : null, t }),
       message ? jsx('p', { className: 'px-2 text-(--ui-text-secondary)', role: 'status', children: message }) : null,
       showAccount ? jsx(AccountLimitsVisual, {
         account: account.isError || account.isFetching ? null : account.data,
         loading: account.isPending || account.isFetching, error: account.isError, t
+      }) : null,
+      cursorReady ? jsx(CursorLimitsVisual, {
+        data: cursor.isFetching || cursor.isPending || cursor.isError ? null : cursor.data,
+        loading: cursor.isPending || cursor.isFetching, error: cursor.isError, t
       }) : null,
       files.length && !message ? jsx(DropdownMenuItem, {
         'aria-controls': detailsId,
@@ -524,7 +649,12 @@ function ContextFilesMenu() {
       }) : null,
       jsx(DropdownMenuItem, {
         disabled: !enabled,
-        onSelect: event => { event.preventDefault(); void result.refetch(); if (accountReady) void account.refetch() },
+        onSelect: event => {
+          event.preventDefault()
+          void result.refetch()
+          if (accountReady) void account.refetch()
+          if (cursorReady) void cursor.refetch()
+        },
         children: t('refresh')
       })
     ]

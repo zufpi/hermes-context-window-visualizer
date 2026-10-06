@@ -1,5 +1,5 @@
 name: context-window-visualizer
-version: "0.3.0"
+version: "0.4.0"
 description: Visualize the focused chat's context window and provider-reported account limits.
 author: zufpi
 homepage: https://github.com/zufpi/hermes-context-window-visualizer
@@ -33,3 +33,8 @@ config_schema:
     default: true
     label: Other providers
     description: Show account limits for any other returned provider id.
+  show_cursor:
+    type: bool
+    default: false
+    label: Cursor (via Quota cache)
+    description: Show cached Cursor allowance from the optional Quota plugin on the focused profile. Controls display only; Quota manages its own credential access and refresh.

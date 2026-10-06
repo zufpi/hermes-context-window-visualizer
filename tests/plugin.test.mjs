@@ -21,6 +21,8 @@ async function loadPlugin() {
     expanded: false, refetches: 0, accountRefetches: 0, items: [], request: null,
     events: new Map(), resets: [],
     accountQuery: { isFetching: false, isPending: false, isError: false, data: { account_lines: [] } },
+    cursorQuery: { isFetching: false, isPending: false, isError: false, data: { status: 'empty', windows: [] } },
+    quotaResponse: null,
     settingsQuery: {
       isFetching: false, isPending: false, isError: false, error: null,
       data: {
@@ -31,6 +33,8 @@ async function loadPlugin() {
     settingsError: null,
     settingsRefetches: 0,
     requests: [],
+    navigations: [],
+    codicons: [],
     query: { isFetching: false, isPending: false, isError: false, data: { context_max: 4000, context_files: [] } }
   }
   const atoms = {
@@ -44,12 +48,20 @@ async function loadPlugin() {
   }
   const sdk = {
     STATUSBAR_AREAS: { right: 'statusBar.right' },
+    Codicon: ({ name, ...props }) => {
+      state.codicons.push({ name, ...props })
+      return React.createElement('i', { 'aria-hidden': 'true', className: `codicon codicon-${name}` })
+    },
     DropdownMenuItem: ({ children, ...props }) => {
       state.items.push({ children, ...props })
-      return React.createElement('button', { type: 'button', 'aria-expanded': props['aria-expanded'] }, children)
+      return React.createElement('button', {
+        type: 'button', 'aria-expanded': props['aria-expanded'], 'aria-label': props['aria-label'],
+        className: props.className
+      }, children)
     },
     host: {
       state: atoms,
+      navigate: path => { state.navigations.push(path) },
       profileRoutes: async () => state.routes,
       requestProfile: async (...args) => {
         state.request = args
@@ -58,6 +70,7 @@ async function loadPlugin() {
           if (state.settingsError) throw state.settingsError
           return state.pluginsPayload
         }
+        if (args[1] === 'cli.exec') return state.quotaResponse
         return state.query.data
       }
     },
@@ -81,6 +94,10 @@ async function loadPlugin() {
       if (options.queryKey[1] === 'provider-settings') {
         state.settingsOptions = options
         return { ...state.settingsQuery, refetch: async () => { state.settingsRefetches += 1 } }
+      }
+      if (options.queryKey[1] === 'cursor-limits') {
+        state.cursorOptions = options
+        return { ...state.cursorQuery, refetch: async () => { state.cursorRefetches = (state.cursorRefetches || 0) + 1 } }
       }
       state.options = options
       return { ...state.query, refetch: async () => { state.refetches += 1 } }
@@ -109,6 +126,7 @@ async function loadPlugin() {
   })
   const menu = () => {
     state.items = []
+    state.codicons = []
     return renderToStaticMarkup(registrations[0].data.menuContent())
   }
   return { state, plugin, registrations, menu }
@@ -388,7 +406,7 @@ test('fetches the focused runtime session and distinguishes whole-file size from
   assert.equal(state.request[3], 12_000)
   assert.equal(state.request.length, 4)
   let prevented = false
-  state.items[0].onSelect({ preventDefault: () => { prevented = true } })
+  state.items.find(item => item['aria-controls'] === 'details-id').onSelect({ preventDefault: () => { prevented = true } })
   assert.equal(prevented, true)
   html = menu()
   assert.match(html, /~12K full file/i)
@@ -427,7 +445,7 @@ test('unknown statuses fall back, refresh stays in the menu, and disabled connec
   const { state, menu } = await loadPlugin()
   state.query.data.context_files = [{ ...files[0], status: 'future-status' }]
   menu()
-  state.items[0].onSelect({ preventDefault: () => {} })
+  state.items.find(item => item['aria-controls'] === 'details-id').onSelect({ preventDefault: () => {} })
   assert.match(menu(), /Status unavailable/)
   let prevented = false
   state.items.at(-1).onSelect({ preventDefault: () => { prevented = true } })
@@ -445,7 +463,8 @@ test('unknown statuses fall back, refresh stays in the menu, and disabled connec
 })
 
 const shownFlags = () => ({
-  show_openai_codex: true, show_anthropic: true, show_openrouter: true, show_other: true
+  show_openai_codex: true, show_anthropic: true, show_openrouter: true, show_other: true,
+  show_cursor: false
 })
 
 function settleChat(state, lines = ['Provider: openai-codex (Pro)', 'Weekly: 80% remaining (20% used)']) {
@@ -638,7 +657,8 @@ test('treats a missing package schema as all providers visible', async () => {
     ]
   }
   assert.deepEqual(fromPlugin(await state.settingsOptions.queryFn()), {
-    show_openai_codex: false, show_anthropic: false, show_openrouter: true, show_other: true
+    show_openai_codex: false, show_anthropic: false, show_openrouter: true, show_other: true,
+    show_cursor: false
   })
 })
 
@@ -757,6 +777,61 @@ test('footer occupancy does not read provider settings', async () => {
   assert.equal(state.requests.length, 0)
 })
 
+function menuText(node) {
+  if (node == null || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(menuText).join('')
+  return menuText(node.props?.children)
+}
+
+test('offers plugin settings from the context menu with no session', async () => {
+  const { state, menu } = await loadPlugin()
+  state.sessionId = null
+  state.owner = null
+  state.busy = true
+  state.requests = []
+  const html = menu()
+  assert.match(html, /Open a chat to inspect its context files/)
+  const header = html.match(/<div data-slot="context-menu-header"[^>]*>(.*?)<\/div>/s)?.[1]
+  assert.ok(header, 'settings shortcut belongs in the popup header')
+  assert.match(html, /data-slot="context-menu-header" class="flex items-center justify-between/)
+  assert.match(header, /Context window/)
+  assert.match(header, /<button[^>]*aria-label="Plugin settings"[^>]*><i[^>]*codicon-settings-gear[^>]*><\/i><\/button>/)
+  assert.doesNotMatch(html, />Plugin settings<\/button>/)
+  assert.equal((html.match(/codicon-settings-gear/g) || []).length, 1)
+  assert.match(html, /codicon-settings-gear/)
+  assert.match(html, /aria-hidden="true"/)
+  assert.equal(state.codicons.some(icon => icon.name === 'settings-gear'), true)
+  const settingsItem = state.items.find(item => item['aria-label'] === 'Plugin settings')
+  assert.ok(settingsItem)
+  assert.notEqual(settingsItem.disabled, true)
+  const refresh = state.items.find(item => menuText(item.children) === 'Refresh')
+  assert.ok(refresh)
+  assert.equal(refresh.disabled, true)
+  let prevented = false
+  settingsItem.onSelect({ preventDefault: () => { prevented = true } })
+  assert.equal(prevented, false)
+  assert.deepEqual(state.navigations, [
+    '/capabilities?tab=plugins&plugin=' + encodeURIComponent('context-window-visualizer')
+  ])
+  assert.equal(state.requests.length, 0)
+  assert.equal(state.refetches, 0)
+  assert.equal(state.accountRefetches, 0)
+  assert.equal(state.settingsRefetches, 0)
+  let refreshPrevented = false
+  refresh.onSelect({ preventDefault: () => { refreshPrevented = true } })
+  assert.equal(refreshPrevented, true)
+  assert.equal(state.refetches, 1)
+  assert.deepEqual(state.navigations, [
+    '/capabilities?tab=plugins&plugin=' + encodeURIComponent('context-window-visualizer')
+  ])
+  assert.equal(state.translations.en.pluginSettings, 'Plugin settings')
+  assert.equal(state.translations.de.pluginSettings, 'Plugin-Einstellungen')
+  for (const locale of ['es', 'fr', 'ja', 'ru', 'ar', 'zh', 'zh-hant']) {
+    assert.equal(state.translations[locale].pluginSettings, undefined)
+  }
+})
+
 test('drops cached account lines when the menu query is unused', async () => {
   const { state, menu, registrations } = await loadPlugin()
   settleChat(state)
@@ -774,4 +849,176 @@ test('drops cached account lines when the menu query is unused', async () => {
   assert.deepEqual(Array.from(state.accountOptions.queryKey), [
     'context-window-visualizer', 'account-limits', 'remote-a', 'default', 'runtime-1', 'example-model-200k'
   ])
+})
+
+const cursorOnly = () => ({
+  show_openai_codex: false, show_anthropic: false, show_openrouter: false,
+  show_other: false, show_cursor: true
+})
+
+test('Cursor cache is opt-in, never queried from the footer or a missing schema', async () => {
+  const { state, menu, registrations } = await loadPlugin()
+  renderToStaticMarkup(registrations[0].data.label)
+  assert.equal(state.cursorOptions, undefined)
+  menu()
+  assert.equal(state.cursorOptions.enabled, false)
+  assert.equal(state.requests.filter(args => args[1] === 'cli.exec').length, 0)
+  state.pluginsPayload = { plugins: [{ key: 'context-window-visualizer', settings_schema: settingsSchema(shownFlags()) }] }
+  assert.equal((await state.settingsOptions.queryFn()).show_cursor, false)
+  state.settingsQuery = { isPending: false, isFetching: false, isError: true, error: { code: -32601 } }
+  menu()
+  assert.equal(state.cursorOptions.enabled, false)
+  const manifest = await readFile(new URL('../plugin.yaml', import.meta.url), 'utf8')
+  assert.match(manifest, /show_cursor:\s*\n\s*type: bool\s*\n\s*default: false/)
+})
+
+test('Cursor alone reads only the focused profile Quota cache, never session.usage', async () => {
+  const { state, menu } = await loadPlugin()
+  state.settingsQuery.data = cursorOnly()
+  menu()
+  assert.equal(state.accountOptions.enabled, false)
+  assert.equal(state.cursorOptions.enabled, true)
+  assert.deepEqual(Array.from(state.cursorOptions.queryKey), [
+    'context-window-visualizer', 'cursor-limits', 'remote-a', 'default'
+  ])
+  assert.equal(state.cursorOptions.gcTime, 0)
+  assert.equal(state.cursorOptions.refetchInterval, undefined)
+  state.quotaResponse = { blocked: false, code: 0, output: JSON.stringify({
+    age_s: 30,
+    providers: {
+      anthropic: { details: ['SECRET_OTHER_PROVIDER'] },
+      cursor: { plan: 'SECRET_PLAN', details: ['SECRET_DETAILS'], windows: [
+        { label: 'Included', used_percent: 30, reset_at: '2030-01-01T12:00:00Z' },
+        { label: 'API', used_percent: 100, reset_at: null }
+      ] }
+    }
+  }) }
+  const sanitized = fromPlugin(await state.cursorOptions.queryFn())
+  assert.deepEqual(sanitized, { status: 'ready', windows: [
+    { label: 'Included', remaining: 70, resetAt: '2030-01-01T12:00:00.000Z' },
+    { label: 'API', remaining: 0, resetAt: null }
+  ] })
+  assert.deepEqual(state.requests.map(args => args[1]), ['cli.exec'])
+  assert.equal(state.request[0].connectionId, 'remote-a')
+  assert.deepEqual(fromPlugin(state.request[2]), {
+    argv: ['--profile', 'default', 'quota', 'status', '--json', '--cached'], timeout: 10
+  })
+  state.cursorQuery.data = sanitized
+  const html = menu()
+  assert.match(html, /Cursor limits/)
+  assert.match(html, /Included/)
+  assert.match(html, /70% remaining/)
+  assert.doesNotMatch(html, /SECRET_|Account limits/)
+  state.items.at(-1).onSelect({ preventDefault: () => {} })
+  assert.equal(state.cursorRefetches, 1)
+})
+
+test('Cursor cache is rejected when stale, malformed, or blocked; no fabricated bar', async () => {
+  const { state, menu } = await loadPlugin()
+  state.settingsQuery.data = cursorOnly()
+  menu()
+  for (const age_s of [1801, -1, '5', null, Infinity]) {
+    state.quotaResponse = { blocked: false, code: 0,
+      output: JSON.stringify({ age_s, providers: { cursor: { windows: [{ label: 'Included', used_percent: 20 }] } } }) }
+    const result = await state.cursorOptions.queryFn()
+    assert.equal(result.status, 'stale')
+    assert.equal(result.windows.length, 0)
+  }
+  state.quotaResponse = { blocked: false, code: 0, output: JSON.stringify({ age_s: 0,
+    providers: { cursor: { windows: [
+      { label: 'Invalid', used_percent: 101 }, { label: 'Negative', used_percent: -1 },
+      { label: 'Text', used_percent: '15' }, { label: 'NaN', used_percent: null }
+    ] } } }) }
+  assert.deepEqual(fromPlugin(await state.cursorOptions.queryFn()), { status: 'empty', windows: [] })
+  for (const response of [{ blocked: true, code: -1, output: 'SECRET' },
+    { blocked: false, code: 1, output: 'SECRET' },
+    { blocked: false, code: 0, output: 'not JSON SECRET' }]) {
+    state.quotaResponse = response
+    await assert.rejects(() => state.cursorOptions.queryFn(), error => !String(error).includes('SECRET'))
+  }
+  state.cursorQuery = { isFetching: false, isPending: false, isError: true }
+  assert.match(menu(), /Cursor limits unavailable/)
+  assert.doesNotMatch(menu(), /SECRET/)
+})
+
+test('Cursor cache is routed only to a unique owner and is independent of the chat provider', async () => {
+  const { state, menu } = await loadPlugin()
+  state.settingsQuery.data = { ...shownFlags(), show_cursor: true }
+  state.accountQuery.data = { account_lines: ['Provider: openai-codex', 'Weekly: 80% remaining (20% used)'] }
+  state.cursorQuery.data = { status: 'ready', windows: [{ label: 'Included', remaining: 50, resetAt: null }] }
+  let html = menu()
+  assert.match(html, /Account limits/)
+  assert.match(html, /Cursor limits/)
+  assert.match(html, /50% remaining/)
+  state.owner = { connectionId: 'remote-b', profile: 'work' }
+  state.routes = [{ connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' }]
+  menu()
+  assert.deepEqual(Array.from(state.cursorOptions.queryKey), [
+    'context-window-visualizer', 'cursor-limits', 'remote-b', 'work'
+  ])
+  state.quotaResponse = { blocked: false, code: 0,
+    output: JSON.stringify({ age_s: 10, providers: { cursor: { windows: [] } } }) }
+  await state.cursorOptions.queryFn()
+  assert.deepEqual(fromPlugin(state.request[2]), {
+    argv: ['--profile', 'work', 'quota', 'status', '--json', '--cached'], timeout: 10
+  })
+  state.routes = []
+  menu()
+  assert.equal(state.cursorOptions.enabled, false)
+  state.routes = [{ connectionId: 'remote-b', profile: 'work', targetProfile: 'work' },
+    { connectionId: 'remote-b', profile: 'work', targetProfile: 'work' }]
+  menu()
+  assert.equal(state.cursorOptions.enabled, false)
+  state.routes = [{ connectionId: 'remote-b', profile: 'work', targetProfile: '' }]
+  menu()
+  assert.equal(state.cursorOptions.enabled, false)
+  state.routes = [{ connectionId: 'remote-b', profile: 'work', targetProfile: 'work' }]
+  state.sessionId = null
+  menu()
+  assert.equal(state.cursorOptions.enabled, false)
+  state.sessionId = 'runtime-2'
+  state.owner = null
+  menu()
+  assert.equal(state.cursorOptions.enabled, false)
+  state.settingsQuery = { isPending: false, isFetching: false, isError: true, error: new Error('timeout') }
+  menu()
+  assert.equal(state.cursorOptions.enabled, false)
+})
+
+test('Cursor renders only bounded windows, never cache metadata or malformed reset strings', async () => {
+  const { state, menu } = await loadPlugin()
+  state.settingsQuery.data = cursorOnly()
+  menu()
+  state.quotaResponse = { blocked: false, code: 0, output: JSON.stringify({ age_s: 1800,
+    providers: { cursor: {
+      unavailable_reason: null, plan: 'SECRET_ACCOUNT', details: ['SECRET_BILLING'],
+      windows: [
+        { label: '<img src=x onerror=alert(1)>', used_percent: 25 },
+        { label: 'On-demand', used_percent: 12.5, reset_at: 'javascript:SECRET_RESET' },
+        { label: 'Included', used_percent: 25, reset_at: '2030-03-04T12:00:00Z' }
+      ]
+    } }
+  }) }
+  const result = fromPlugin(await state.cursorOptions.queryFn())
+  assert.deepEqual(result, { status: 'ready', windows: [
+    { label: 'On-demand', remaining: 88, resetAt: null },
+    { label: 'Included', remaining: 75, resetAt: '2030-03-04T12:00:00.000Z' }
+  ] })
+  state.cursorQuery.data = result
+  let html = menu()
+  assert.match(html, /Cursor limits \(Quota cache\)/)
+  assert.match(html, /75% remaining/)
+  assert.match(html, /Resets 2030-03-04T12:00:00\.000Z/)
+  assert.doesNotMatch(html, /SECRET_|onerror|javascript:/)
+  state.cursorQuery.data = { status: 'stale', windows: [] }
+  html = menu()
+  assert.match(html, /Cursor cache is stale/)
+  assert.doesNotMatch(html, /75% remaining/)
+  state.cursorQuery.data = { status: 'unavailable', windows: [] }
+  assert.match(menu(), /Cursor limits unavailable/)
+  state.cursorQuery.data = { status: 'empty', windows: [] }
+  assert.match(menu(), /No Cursor allowance windows/)
+  state.settingsQuery.data = { ...cursorOnly(), show_cursor: 'true' }
+  menu()
+  assert.equal(state.cursorOptions.enabled, false)
 })

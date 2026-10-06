@@ -1,5 +1,7 @@
 # Provider visibility settings
 
+**Historical first-phase plan.** The four-switch scope and Cursor deferral below describe the original implementation decision, not the current feature set. The plugin now also offers a default-off `show_cursor` switch backed by the optional Quota plugin's cached data, plus an icon-only gear in the popup header. See the [current README](../README.md#cursor-via-quota-cache) for the implementation, consent boundary, and privacy disclosures. No catalog submission is implied.
+
 Implementation plan for the standalone Context Window Visualizer. This phase adds four reversible visibility switches for the account-limit section. It does not change the context meter, Hermes core, or Cursor usage.
 
 ## Product scope
@@ -10,7 +12,7 @@ The account-limit section stays a display filter on the one `session.usage` resu
 
 Scope is the focused chat and its owning `{ connectionId, profile }` route. A setting edited on another profile or connection does not apply. An ambiguous or missing owner still fails closed: no breakdown read and no usage read on a guessed route.
 
-Cursor usage is deferred. See [Cursor](#cursor).
+Cursor usage was deferred in this phase. See [Cursor (original deferral)](#cursor-original-deferral) and the current README for the later opt-in implementation.
 
 ## Settings
 
@@ -88,9 +90,9 @@ A remote chat's settings and `session.usage` both come from the owning backend. 
 
 No catalog submission.
 
-## Cursor
+## Cursor (original deferral)
 
-Not in this phase. A personal live Cursor allowance has no documented public API to call. The comparison point is a reference plugin that uses an undocumented, credential-bound endpoint. This plugin must not read tokens, copy that client, or ship a guessed URL or payload. Revisit only if a documented public API exists.
+Not in this original phase. A personal live Cursor allowance has no documented public API to call. The comparison point is a reference plugin that uses an undocumented, credential-bound endpoint. This plugin must not read tokens, copy that client, or ship a guessed URL or payload. A later opt-in implementation reads Quota's cache through its CLI and retains **only sanitized Cursor windows**; the full cache briefly reaches the renderer. It still does not read credentials or call Cursor directly. See the current README for its limits.
 
 ## Feature commit and rollback
 
