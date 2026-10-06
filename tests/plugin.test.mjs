@@ -14,7 +14,7 @@ const { renderToStaticMarkup } = requireDesktop('react-dom/server')
 const jsxRuntime = requireDesktop('react/jsx-runtime')
 const source = await readFile(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
 
-async function loadPlugin() {
+async function loadPlugin(options = {}) {
   const state = {
     sessionId: 'runtime-1', owner: { connectionId: 'remote-a', profile: 'default' }, busy: false,
     busyBySession: {},
@@ -22,6 +22,7 @@ async function loadPlugin() {
     routesLoading: false, routesError: false, usage: null,
     expanded: false, refetches: 0, accountRefetches: 0, items: [], request: null,
     events: new Map(), resets: [],
+    hookCursor: 0, extraExpanded: [], seenQueryKeys: [],
     accountQuery: { isFetching: false, isPending: false, isError: false, data: { account_lines: [] } },
     cursorQuery: { isFetching: false, isPending: false, isError: false, data: { status: 'empty', windows: [] } },
     quotaResponse: null,
@@ -50,6 +51,12 @@ async function loadPlugin() {
   }
   const sdk = {
     STATUSBAR_AREAS: { right: 'statusBar.right' },
+    ...(options.paneFooter ? { CHAT_PANE_FOOTER_AREA: 'chatPane.footer.right' } : {}),
+    DropdownMenu: ({ children }) => React.createElement(React.Fragment, null, children),
+    DropdownMenuTrigger: ({ children, asChild }) => asChild
+      ? React.cloneElement(children, { 'data-trigger': 'pane' })
+      : React.createElement('button', { 'data-slot': 'dropdown-menu-trigger' }, children),
+    DropdownMenuContent: ({ children }) => React.createElement('div', { 'data-slot': 'dropdown-menu-content' }, children),
     Codicon: ({ name, ...props }) => {
       state.codicons.push({ name, ...props })
       return React.createElement('i', { 'aria-hidden': 'true', className: `codicon codicon-${name}` })
@@ -84,6 +91,8 @@ async function loadPlugin() {
       return typeof value === 'function' ? value(...args) : value ?? key
     },
     useQuery: options => {
+      state.seenQueryKeys.push(options.queryKey)
+      const cacheKey = options.queryKey.map(part => String(part ?? '')).join('\0')
       if (options.queryKey[1] === 'routes') {
         state.routesOptions = options
         return { data: state.routesLoading ? undefined : state.routes,
@@ -91,7 +100,6 @@ async function loadPlugin() {
       }
       if (options.queryKey[1] === 'account-limits') {
         state.accountOptions = options
-        const cacheKey = options.queryKey.map(part => String(part ?? '')).join('\0')
         const refetch = async () => { state.accountRefetches += 1 }
         // A pinned snapshot belongs to one query key. A new key is a new observer.
         if (state.accountCacheKey != null && state.accountCacheKey !== cacheKey) {
@@ -101,22 +109,43 @@ async function loadPlugin() {
       }
       if (options.queryKey[1] === 'provider-settings') {
         state.settingsOptions = options
-        return { ...state.settingsQuery, refetch: async () => { state.settingsRefetches += 1 } }
+        const refetch = async () => { state.settingsRefetches += 1 }
+        if (state.settingsCacheKey != null && state.settingsCacheKey !== cacheKey) {
+          return { isFetching: false, isPending: true, isFetched: false, isError: false, data: undefined, refetch }
+        }
+        return { ...state.settingsQuery, refetch }
       }
       if (options.queryKey[1] === 'cursor-limits') {
         state.cursorOptions = options
-        return { ...state.cursorQuery, refetch: async () => { state.cursorRefetches = (state.cursorRefetches || 0) + 1 } }
+        const refetch = async () => { state.cursorRefetches = (state.cursorRefetches || 0) + 1 }
+        if (state.cursorCacheKey != null && state.cursorCacheKey !== cacheKey) {
+          return { isFetching: false, isPending: true, isFetched: false, isError: false, data: undefined, refetch }
+        }
+        return { ...state.cursorQuery, refetch }
       }
       state.options = options
-      return { ...state.query, refetch: async () => { state.refetches += 1 } }
+      const refetch = async () => { state.refetches += 1 }
+      if (state.breakdownCacheKey != null && state.breakdownCacheKey !== cacheKey) {
+        return { isFetching: false, isPending: true, isFetched: false, isError: false, data: undefined, refetch }
+      }
+      return { ...state.query, refetch }
     },
     useValue: atom => atom.get()
   }
   const modules = {
     '@hermes/plugin-sdk': sdk,
-    react: { useId: () => 'details-id', useState: () => [state.expanded, next => {
-      state.expanded = typeof next === 'function' ? next(state.expanded) : next
-    }] },
+    react: { useId: () => 'details-id', useState: () => {
+      const index = state.hookCursor++
+      if (index === 0) {
+        return [state.expanded, next => {
+          state.expanded = typeof next === 'function' ? next(state.expanded) : next
+        }]
+      }
+      if (state.extraExpanded[index] === undefined) state.extraExpanded[index] = false
+      return [state.extraExpanded[index], next => {
+        state.extraExpanded[index] = typeof next === 'function' ? next(state.extraExpanded[index]) : next
+      }]
+    } },
     'react/jsx-runtime': jsxRuntime
   }
   const context = vm.createContext({ Intl, Number, Set })
@@ -135,6 +164,7 @@ async function loadPlugin() {
   const menu = () => {
     state.items = []
     state.codicons = []
+    state.hookCursor = 0
     return renderToStaticMarkup(registrations[0].data.menuContent())
   }
   return { state, plugin, registrations, menu }
@@ -163,6 +193,39 @@ test('registers an SDK statusbar menu', async () => {
   state.events.get('session.reclaimed')({ session_id: '', payload: { session_id: 'runtime-1' } })
   assert.equal(state.resets.length, 2)
   assert.deepEqual(Array.from(state.resets[0].queryKey), ['context-window-visualizer', 'remote-a', 'default', 'runtime-1'])
+})
+
+test('paints independent context meters for two visible chat panes', async () => {
+  const { registrations } = await loadPlugin({ paneFooter: true })
+  assert.equal(registrations.some(item => item.area === 'statusBar.right'), false)
+  const panes = registrations.filter(item => item.area === 'chatPane.footer.right')
+  assert.equal(panes.length, 1)
+  assert.equal(typeof panes[0].data.render, 'function')
+  const left = renderToStaticMarkup(React.createElement(panes[0].data.render, {
+    sessionId: 'runtime-a',
+    storedSessionId: 'stored-a',
+    owner: { connectionId: 'remote-a', profile: 'work' },
+    busy: false,
+    usage: { context_max: 100, context_used: 25, context_estimated: false }
+  }))
+  const right = renderToStaticMarkup(React.createElement(panes[0].data.render, {
+    sessionId: 'runtime-b',
+    storedSessionId: 'stored-b',
+    owner: { connectionId: 'remote-b', profile: 'default' },
+    busy: true,
+    usage: { context_max: 200, context_used: 140, context_estimated: true }
+  }))
+  assert.match(left, />Context<\/span>/)
+  assert.match(left, /aria-valuenow="25"/)
+  assert.match(left, /25%/)
+  assert.doesNotMatch(left, /Calculating\.\.\./)
+  assert.doesNotMatch(left, /70%/)
+  assert.match(right, />Calculating\.\.\.<\/span>/)
+  assert.doesNotMatch(right, /70%/)
+  assert.doesNotMatch(right, /aria-valuenow="70"/)
+  assert.doesNotMatch(right, /aria-valuenow=/)
+  assert.doesNotMatch(right, /25%/)
+  assert.doesNotMatch(right, />Context<\/span>/)
 })
 
 test('paints context occupancy in the footer before the menu is opened', async () => {
@@ -1391,6 +1454,342 @@ test('uses display defaults for an old schema and rejects invalid enums', async 
   assert.doesNotMatch(html, /Estimated composition/)
   assert.match(html, /25% used/)
   assert.match(html, /Select Refresh to load account limits/)
+})
+
+function paneReg(registrations) {
+  const panes = registrations.filter(item => item.area === 'chatPane.footer.right')
+  assert.equal(panes.length, 1)
+  assert.equal(registrations.some(item => item.area === 'statusBar.right'), false)
+  return panes[0]
+}
+
+function renderPane(state, registration, context) {
+  state.hookCursor = 0
+  state.items = []
+  state.codicons = []
+  state.seenQueryKeys = []
+  return renderToStaticMarkup(React.createElement(registration.data.render, context))
+}
+
+function openPane(state, registration, context) {
+  state.expanded = true
+  return renderPane(state, registration, context)
+}
+
+test('keeps the window statusbar meter when the pane footer slot is absent', async () => {
+  const { registrations } = await loadPlugin()
+  assert.equal(registrations.length, 1)
+  assert.equal(registrations[0].area, 'statusBar.right')
+  assert.equal(registrations[0].data.variant, 'menu')
+  assert.equal(registrations[0].data.render, undefined)
+})
+
+test('anchors the pane popup to that pane and prefers its breakdown over focused usage', async () => {
+  const { state, registrations } = await loadPlugin({ paneFooter: true })
+  const pane = paneReg(registrations)
+  state.sessionId = 'runtime-focused'
+  state.owner = { connectionId: 'remote-a', profile: 'default' }
+  state.busy = true
+  state.usage = { context_max: 100, context_used: 99, context_estimated: false }
+  state.routes = [
+    { connectionId: 'remote-a', profile: 'default', targetProfile: 'default', mode: 'remote' },
+    { connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' }
+  ]
+  state.query = {
+    isFetching: false, isPending: false, isError: false,
+    data: {
+      model: 'pane-model', context_max: 100, context_used: 10, context_estimated: false,
+      categories: [], context_files: []
+    }
+  }
+  const context = {
+    sessionId: 'runtime-b', storedSessionId: 'stored-b',
+    owner: { connectionId: 'remote-b', profile: 'work' }, busy: false,
+    usage: { context_max: 100, context_used: 25, context_estimated: false }
+  }
+  const closed = renderPane(state, pane, context)
+  assert.equal((closed.match(/<button\b/g) ?? []).length, 1, 'pane trigger must not nest buttons')
+  assert.match(closed, /data-slot="context-pane-meter"/)
+  assert.doesNotMatch(closed, /data-slot="dropdown-menu-content"/)
+  assert.match(closed, />Context<\/span>/)
+  assert.match(closed, /10%/)
+  assert.doesNotMatch(closed, /99%/)
+  assert.doesNotMatch(closed, /25%/)
+  assert.doesNotMatch(closed, /Calculating\.\.\./)
+  assert.equal(state.settingsOptions, undefined)
+  assert.equal(state.cursorOptions, undefined)
+  assert.equal(state.requests.length, 0)
+  assert.deepEqual(Array.from(state.options.queryKey), ['context-window-visualizer', 'remote-b', 'work', 'runtime-b'])
+  assert.equal(state.options.enabled, true)
+  assert.equal(state.options.gcTime, 0)
+
+  const html = openPane(state, pane, context)
+  assert.match(html, /data-slot="dropdown-menu-content"/)
+  assert.match(html, /pane-model/)
+  assert.match(html, /10% used/)
+  assert.doesNotMatch(html, /99%/)
+  const gear = state.items.find(item => item['aria-label'] === 'Plugin settings')
+  assert.ok(gear)
+  assert.equal(state.codicons.some(icon => icon.name === 'settings-gear'), true)
+  gear.onSelect()
+  assert.deepEqual(state.navigations, ['/capabilities?tab=plugins&plugin=context-window-visualizer'])
+  const refresh = state.items.find(item => menuText(item.children) === 'Refresh')
+  assert.equal(refresh.disabled, false)
+  refresh.onSelect({ preventDefault() {} })
+  assert.equal(state.refetches, 1)
+})
+
+test('does not show one pane cache in another after an owner switch', async () => {
+  const { state, registrations } = await loadPlugin({ paneFooter: true })
+  const pane = paneReg(registrations)
+  state.sessionId = 'runtime-b'
+  state.owner = { connectionId: 'remote-b', profile: 'default' }
+  state.usage = { context_max: 200, context_used: 180, context_estimated: false }
+  state.routes = [
+    { connectionId: 'remote-a', profile: 'work', targetProfile: 'work', mode: 'remote' },
+    { connectionId: 'remote-b', profile: 'default', targetProfile: 'default', mode: 'remote' }
+  ]
+  state.query.data = {
+    model: 'model-a', context_max: 100, context_used: 10, context_estimated: false,
+    categories: [{ id: 'conversation', label: 'Conversation', tokens: 10 }],
+    context_files: [{ label: 'AGENTS.md', path: '/example/work/private/AGENTS.md', est_tokens: 1200, status: 'loaded', loaded: true }]
+  }
+  state.accountQuery = {
+    isFetching: false, isPending: false, isError: false, isFetched: true,
+    data: { account_lines: ['Provider: openai-codex (Pro)', 'Weekly: 80% remaining (20% used)'] }
+  }
+  state.settingsQuery.data = { ...shownFlags(), ...displayDefaults() }
+  const left = {
+    sessionId: 'runtime-a', storedSessionId: 'stored-a',
+    owner: { connectionId: 'remote-a', profile: 'work' }, busy: false,
+    usage: { context_max: 100, context_used: 10, context_estimated: false }
+  }
+  let html = openPane(state, pane, left)
+  assert.match(html, /model-a/)
+  assert.match(html, /Weekly/)
+  state.breakdownCacheKey = ['context-window-visualizer', 'remote-a', 'work', 'runtime-a'].join('\0')
+  state.accountCacheKey = Array.from(state.accountOptions.queryKey).join('\0')
+  const right = {
+    sessionId: 'runtime-b', storedSessionId: 'stored-b',
+    owner: { connectionId: 'remote-b', profile: 'default' }, busy: false,
+    usage: { context_max: 200, context_used: 80, context_estimated: false }
+  }
+  html = openPane(state, pane, right)
+  assert.doesNotMatch(html, /model-a/)
+  assert.doesNotMatch(html, /Weekly/)
+  assert.doesNotMatch(html, /openai-codex/)
+  assert.doesNotMatch(html, /AGENTS\.md/)
+  assert.doesNotMatch(html, /90%/)
+  assert.match(html, /40%/)
+  assert.equal(state.options.queryKey[1], 'remote-b')
+  assert.equal(state.options.queryKey[2], 'default')
+  assert.equal(state.options.queryKey[3], 'runtime-b')
+  assert.equal(state.accountOptions.queryKey[2], 'remote-b')
+  assert.equal(state.accountOptions.queryKey[3], 'default')
+  assert.equal(state.accountOptions.gcTime, 0)
+})
+
+test('queries only the unique route for a remote pane owner', async () => {
+  const { state, registrations } = await loadPlugin({ paneFooter: true })
+  const pane = paneReg(registrations)
+  const context = {
+    sessionId: 'runtime-b', storedSessionId: 'stored-never',
+    owner: { connectionId: 'remote-b', profile: 'work' }, busy: false, usage: null
+  }
+  state.routes = [
+    { connectionId: 'remote-b', profile: 'default', targetProfile: 'default', mode: 'remote' },
+    { connectionId: 'remote-a', profile: 'work', targetProfile: 'other', mode: 'remote' },
+    { connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' }
+  ]
+  renderPane(state, pane, context)
+  assert.equal(state.options.enabled, true)
+  assert.equal(state.routesOptions.enabled, true)
+  assert.equal(state.routesOptions.gcTime, 0)
+  state.requests = []
+  await state.options.queryFn()
+  assert.equal(state.requests.length, 1)
+  assert.equal(state.request[0].connectionId, 'remote-b')
+  assert.equal(state.request[0].profile, 'work')
+  assert.equal(state.request[0].targetProfile, 'work')
+  assert.equal(state.request[1], 'session.context_breakdown')
+  assert.equal(state.request[2].session_id, 'runtime-b')
+  assert.notEqual(state.request[2].session_id, 'stored-never')
+
+  state.routes.push({ connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' })
+  state.requests = []
+  renderPane(state, pane, context)
+  assert.equal(state.options.enabled, false)
+  assert.equal(state.settingsOptions, undefined)
+  openPane(state, pane, context)
+  assert.equal(state.settingsOptions.enabled, false)
+  assert.equal(state.accountOptions.enabled, false)
+  assert.equal(state.cursorOptions.enabled, false)
+  assert.equal(state.requests.length, 0)
+})
+
+test('keeps a busy pane from hiding an idle pane or painting stale composition', async () => {
+  const { state, registrations } = await loadPlugin({ paneFooter: true })
+  const pane = paneReg(registrations)
+  state.busy = true
+  state.busyBySession = { 'runtime-a': true }
+  state.sessionId = 'runtime-b'
+  state.usage = { context_max: 100, context_used: 90, context_estimated: true }
+  state.query.data = {
+    model: 'stale-model', context_max: 200, context_used: 140, context_estimated: true,
+    categories: [{ id: 'conversation', label: 'Conversation', tokens: 140 }],
+    context_files: [{ label: 'AGENTS.md', path: '/example/work/private/AGENTS.md', est_tokens: 10, status: 'loaded', loaded: true }]
+  }
+  const idle = {
+    sessionId: 'runtime-a', storedSessionId: 'stored-a',
+    owner: { connectionId: 'remote-a', profile: 'work' }, busy: false,
+    usage: { context_max: 100, context_used: 25, context_estimated: false }
+  }
+  const busy = {
+    sessionId: 'runtime-b', storedSessionId: 'stored-b',
+    owner: { connectionId: 'remote-b', profile: 'default' }, busy: true,
+    usage: { context_max: 200, context_used: 140, context_estimated: true }
+  }
+  const left = renderPane(state, pane, idle)
+  assert.match(left, />Context<\/span>/)
+  assert.match(left, /25%/)
+  assert.doesNotMatch(left, /Calculating\.\.\./)
+  assert.doesNotMatch(left, /90%/)
+  const right = renderPane(state, pane, busy)
+  assert.match(right, />Calculating\.\.\.<\/span>/)
+  assert.doesNotMatch(right, /aria-valuenow=/)
+  assert.doesNotMatch(right, /70%/)
+  assert.doesNotMatch(right, /90%/)
+  assert.doesNotMatch(right, /25%/)
+  const again = renderPane(state, pane, idle)
+  assert.match(again, />Context<\/span>/)
+  assert.match(again, /25%/)
+  const popup = openPane(state, pane, busy)
+  assert.match(popup, /Waiting for the response to finish/)
+  assert.doesNotMatch(popup, /stale-model/)
+  assert.doesNotMatch(popup, /Estimated composition/)
+  assert.doesNotMatch(popup, /70%/)
+  assert.doesNotMatch(popup, /AGENTS\.md/)
+})
+
+test('does not read a pane that is not rendered', async () => {
+  const { state, registrations } = await loadPlugin({ paneFooter: true })
+  const pane = paneReg(registrations)
+  renderPane(state, pane, {
+    sessionId: 'runtime-a', storedSessionId: 'stored-a',
+    owner: { connectionId: 'remote-a', profile: 'default' }, busy: false, usage: null
+  })
+  const keys = state.seenQueryKeys.map(key => key.map(part => String(part ?? '')).join('\0'))
+  assert.equal(keys.some(key => key.includes('runtime-a')), true)
+  assert.equal(keys.some(key => key.includes('runtime-b')), false)
+})
+
+test('fails closed when the pane owner or runtime id is missing', async () => {
+  const { state, registrations } = await loadPlugin({ paneFooter: true })
+  const pane = paneReg(registrations)
+  state.usage = { context_max: 100, context_used: 40, context_estimated: false }
+  const missingOwner = renderPane(state, pane, {
+    sessionId: 'runtime-a', storedSessionId: 'stored-a', owner: null, busy: false,
+    usage: { context_max: 100, context_used: 40, context_estimated: false }
+  })
+  assert.doesNotMatch(missingOwner, /40%/)
+  assert.doesNotMatch(missingOwner, /aria-valuenow=/)
+  assert.equal(state.options.enabled, false)
+  assert.equal(state.routesOptions.enabled, false)
+  assert.equal(state.requests.length, 0)
+
+  const draft = renderPane(state, pane, {
+    sessionId: null, storedSessionId: 'stored-a',
+    owner: { connectionId: 'remote-a', profile: 'default' }, busy: false,
+    usage: { context_max: 100, context_used: 40, context_estimated: false }
+  })
+  assert.doesNotMatch(draft, /40%/)
+  assert.doesNotMatch(draft, /aria-valuenow=/)
+  assert.equal(state.options.enabled, false)
+  assert.notEqual(state.options.queryKey.at(-1), 'stored-a')
+  const popup = openPane(state, pane, {
+    sessionId: null, storedSessionId: 'stored-a',
+    owner: { connectionId: 'remote-a', profile: 'default' }, busy: false, usage: null
+  })
+  assert.match(popup, /Open a chat/)
+  assert.equal(state.accountOptions.enabled, false)
+  assert.equal(state.cursorOptions.enabled, false)
+  assert.equal(state.settingsOptions.enabled, false)
+  assert.equal(state.requests.length, 0)
+})
+
+test('applies provider and Quota filters to the pane owner only', async () => {
+  const { state, registrations } = await loadPlugin({ paneFooter: true })
+  const pane = paneReg(registrations)
+  state.sessionId = 'runtime-focused'
+  state.owner = { connectionId: 'remote-a', profile: 'default' }
+  state.routes = [
+    { connectionId: 'remote-a', profile: 'default', targetProfile: 'default', mode: 'local' },
+    { connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' }
+  ]
+  state.query.data = {
+    model: 'pane-model', context_max: 100, context_used: 10, context_estimated: false,
+    categories: [], context_files: []
+  }
+  state.accountQuery = {
+    isFetching: false, isPending: false, isError: false, isFetched: true,
+    data: { account_lines: ['Provider: openai-codex (Pro)', 'Weekly: 80% remaining (20% used)'] }
+  }
+  state.settingsQuery.data = { ...shownFlags(), show_openai_codex: false, ...displayDefaults() }
+  const context = {
+    sessionId: 'runtime-b', storedSessionId: 'stored-b',
+    owner: { connectionId: 'remote-b', profile: 'work' }, busy: false, usage: null
+  }
+  let html = openPane(state, pane, context)
+  assert.equal(state.accountOptions.queryKey[2], 'remote-b')
+  assert.equal(state.accountOptions.queryKey[3], 'work')
+  assert.equal(state.accountOptions.gcTime, 0)
+  assert.equal(state.settingsOptions.queryKey[2], 'remote-b')
+  assert.equal(state.settingsOptions.queryKey[3], 'work')
+  assert.equal(state.settingsOptions.gcTime, 0)
+  assert.doesNotMatch(html, /Account limits/)
+  assert.doesNotMatch(html, /Weekly/)
+  assert.equal(state.cursorOptions.enabled, false)
+  assert.equal(state.requests.filter(args => args[1] === 'cli.exec').length, 0)
+
+  state.settingsQuery.data = { ...cursorOnly(), ...displayDefaults() }
+  html = openPane(state, pane, context)
+  assert.equal(state.accountOptions.enabled, false)
+  assert.equal(state.cursorOptions.enabled, true)
+  assert.equal(state.cursorOptions.gcTime, 0)
+  assert.deepEqual(Array.from(state.cursorOptions.queryKey), [
+    'context-window-visualizer', 'cursor-limits', 'remote-b', 'work'
+  ])
+  state.requests = []
+  state.quotaResponse = { blocked: false, code: 0, output: JSON.stringify({ age_s: 5, providers: { cursor: { windows: [] } } }) }
+  await state.cursorOptions.queryFn()
+  assert.equal(state.request[0].targetProfile, 'work')
+  assert.deepEqual(fromPlugin(state.request[2].argv), ['--profile', 'work', 'quota', 'status', '--json', '--cached'])
+  assert.equal(state.requests.some(args => args[1] === 'session.usage'), false)
+  assert.doesNotMatch(html, /SECRET_/)
+})
+
+test('keeps pane context-file paths to the filename until full path is selected', async () => {
+  const { state, registrations } = await loadPlugin({ paneFooter: true })
+  const pane = paneReg(registrations)
+  state.routes = [{ connectionId: 'remote-b', profile: 'work', targetProfile: 'work', mode: 'remote' }]
+  state.query.data = {
+    model: 'pane-model', context_max: 100, context_used: 10, context_estimated: false, categories: [],
+    context_files: privateFiles
+  }
+  state.settingsQuery.data = { ...shownFlags(), ...displayDefaults() }
+  const context = {
+    sessionId: 'runtime-b', storedSessionId: 'stored-b',
+    owner: { connectionId: 'remote-b', profile: 'work' }, busy: false, usage: null
+  }
+  openPane(state, pane, context)
+  expandFiles(state)
+  let html = openPane(state, pane, context)
+  assert.match(html, /AGENTS\.md/)
+  assert.doesNotMatch(html, /example\/work\/private/)
+  assert.doesNotMatch(html, /example\\private/)
+  state.settingsQuery.data = { ...shownFlags(), ...displayDefaults(), context_file_paths: 'full path' }
+  html = openPane(state, pane, context)
+  assert.match(html, /example\/work\/private\/AGENTS\.md/)
 })
 
 test('a disabled React Query observer fetches when Refresh calls refetch', async () => {

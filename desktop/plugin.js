@@ -1,13 +1,18 @@
-import {
+import * as sdk from '@hermes/plugin-sdk'
+
+const {
   Codicon,
+  DropdownMenu,
+  DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuTrigger,
   STATUSBAR_AREAS,
   host,
   queryClient,
   usePluginI18n,
   useQuery,
   useValue
-} from '@hermes/plugin-sdk'
+} = sdk
 import { useId, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
@@ -552,32 +557,49 @@ function CursorLimitsVisual({ data, loading, error, t }) {
   })
 }
 
-function useFocusedContextData() {
-  const sessionId = useValue(host.state.focusedSessionId)
-  const owner = useValue(host.state.focusedSessionOwner)
+function paneOwner(owner) {
+  if (!owner || typeof owner.connectionId !== 'string' || !owner.connectionId ||
+      typeof owner.profile !== 'string' || !owner.profile) return null
+  return { connectionId: owner.connectionId, profile: owner.profile }
+}
+
+function useContextData(pane) {
+  const focusedSessionId = useValue(host.state.focusedSessionId)
+  const focusedOwner = useValue(host.state.focusedSessionOwner)
   const primaryBusy = useValue(host.state.busy)
   const busyBySession = useValue(host.state.busyBySession)
+  const focusedUsage = useValue(host.state.focusedUsage)
+  const scoped = pane != null
+  const sessionId = scoped
+    ? (typeof pane.sessionId === 'string' && pane.sessionId ? pane.sessionId : null)
+    : focusedSessionId
+  const owner = scoped ? paneOwner(pane.owner) : focusedOwner
   // The primary workspace can keep running after focus moves to an idle tile.
   // When its runtime has a state slice, that slice owns the turn flag.
-  const busy = sessionId && Object.prototype.hasOwnProperty.call(busyBySession ?? {}, sessionId)
-    ? Boolean(busyBySession[sessionId]) : primaryBusy
-  const focusedUsage = useValue(host.state.focusedUsage)
-  // A focused split tile can belong to another connection even while the
+  const busy = scoped
+    ? Boolean(pane.busy)
+    : (sessionId && Object.prototype.hasOwnProperty.call(busyBySession ?? {}, sessionId)
+        ? Boolean(busyBySession[sessionId]) : primaryBusy)
+  // Pane usage is the last completed turn, not a live stream. focusedUsage
+  // remains the legacy status-bar stream and is ignored for a pane meter.
+  const liveUsage = scoped ? (busy || !sessionId || !owner ? null : pane.usage) : focusedUsage
+  const identityReady = Boolean(sessionId && owner?.connectionId && owner?.profile)
+  // A pane or focused tile can belong to another connection even while the
   // active gateway stays on the foreground profile. Route discovery is async.
   const routes = useQuery({
     queryKey: [ID, 'routes', owner?.connectionId, owner?.profile],
     queryFn: () => host.profileRoutes(),
-    enabled: Boolean(sessionId && owner),
+    enabled: identityReady,
     retry: false,
     gcTime: 0,
     refetchOnMount: 'always',
     refetchOnWindowFocus: false
   })
-  const matchingRoutes = owner && !routes.isError && Array.isArray(routes.data)
+  const matchingRoutes = identityReady && !routes.isError && Array.isArray(routes.data)
     ? routes.data.filter(candidate => candidate.connectionId === owner.connectionId && candidate.profile === owner.profile)
     : []
   const route = matchingRoutes.length === 1 ? matchingRoutes[0] : null
-  const enabled = Boolean(sessionId && route) && !busy
+  const enabled = identityReady && Boolean(route) && !busy
   const result = useQuery({
     queryKey: [ID, owner?.connectionId, owner?.profile, sessionId],
     queryFn: () => host.requestProfile(route, 'session.context_breakdown', { session_id: sessionId }, 12_000),
@@ -590,13 +612,16 @@ function useFocusedContextData() {
   // A settled snapshot from the preceding turn/compression is not current
   // while this session's fresh read is still in flight.
   const breakdown = enabled && !result.isError && !result.isFetching ? result.data : null
-  return { sessionId, owner, busy, focusedUsage, routes, route, enabled, result, breakdown }
+  return { sessionId, owner, busy, liveUsage, routes, route, enabled, result, breakdown, scoped }
 }
 
-function FooterMeter() {
+function FooterMeter({ pane } = {}) {
   const t = usePluginI18n(ID)
-  const { busy, focusedUsage, breakdown } = useFocusedContextData()
-  const snapshot = breakdown?.context_max > 0 ? breakdown : busy && focusedUsage?.context_max > 0 ? focusedUsage : null
+  const { busy, liveUsage, breakdown, scoped } = useContextData(pane)
+  const settled = breakdown?.context_max > 0 ? breakdown : null
+  const streamed = !scoped && busy && liveUsage?.context_max > 0 ? liveUsage : null
+  const completed = scoped && !busy && liveUsage?.context_max > 0 ? liveUsage : null
+  const snapshot = settled || streamed || completed || null
   const max = Number(snapshot?.context_max) || 0
   const used = max ? Math.min(max, Math.max(0, Number(snapshot.context_used) || 0)) : 0
   const percent = max ? Math.min(100, Math.max(0, Math.round(used / max * 100))) : null
@@ -616,9 +641,9 @@ function FooterMeter() {
   ] })
 }
 
-function ContextFilesMenu() {
+function ContextFilesMenu({ pane } = {}) {
   const t = usePluginI18n(ID)
-  const { sessionId, owner, busy, focusedUsage, routes, route, enabled, result, breakdown } = useFocusedContextData()
+  const { sessionId, owner, busy, liveUsage, routes, route, enabled, result, breakdown, scoped } = useContextData(pane)
   const [open, setOpen] = useState(false)
   const detailsId = useId()
   const files = Array.isArray(breakdown?.context_files) ? breakdown.context_files : []
@@ -698,7 +723,7 @@ function ContextFilesMenu() {
         ]
       }),
       jsx(ContextWindowVisual, {
-        breakdown, usage: busy ? focusedUsage : null,
+        breakdown, usage: scoped || !busy ? null : liveUsage,
         showComposition: settings.data?.show_estimated_composition !== false, t
       }),
       message ? jsx('p', { className: 'px-2 text-(--ui-text-secondary)', role: 'status', children: message }) : null,
@@ -763,6 +788,16 @@ export default {
         void queryClient.resetQueries({ queryKey: [ID, 'account-limits', connectionId, profile, sessionId] })
       })
     }
+    const paneArea = typeof sdk.CHAT_PANE_FOOTER_AREA === 'string' ? sdk.CHAT_PANE_FOOTER_AREA : ''
+    if (paneArea && typeof DropdownMenu === 'function') {
+      ctx.register({
+        id: 'pane-status',
+        area: paneArea,
+        order: 110,
+        data: { render: PaneFooter }
+      })
+      return
+    }
     ctx.register({
       id: 'status',
       area: STATUSBAR_AREAS.right,
@@ -779,4 +814,27 @@ export default {
       }
     })
   }
+}
+
+function PaneFooter(pane) {
+  const [open, setOpen] = useState(false)
+  return jsxs(DropdownMenu, {
+    open, onOpenChange: setOpen,
+    children: [
+      jsx(DropdownMenuTrigger, {
+        asChild: true,
+        children: jsx('button', {
+          type: 'button',
+          'data-slot': 'context-pane-meter',
+          className: 'inline-flex items-center',
+          children: jsx(FooterMeter, { pane })
+        })
+      }),
+      open ? jsx(DropdownMenuContent, {
+        align: 'end',
+        className: 'w-80',
+        children: jsx(ContextFilesMenu, { pane })
+      }) : null
+    ]
+  })
 }

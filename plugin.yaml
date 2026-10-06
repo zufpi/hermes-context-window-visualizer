@@ -1,6 +1,6 @@
 name: context-window-visualizer
-version: "0.5.1"
-description: Visualize the focused chat's context window and provider-reported account limits.
+version: "0.5.2"
+description: Visualize each visible chat pane's context window and provider-reported account limits. Older Desktop builds keep a focused-chat status-bar meter.
 author: zufpi
 homepage: https://github.com/zufpi/hermes-context-window-visualizer
 manifest_version: 2
@@ -17,17 +17,17 @@ config_schema:
     type: bool
     default: true
     label: OpenAI Codex
-    description: Show account limits when the focused chat's returned provider id is openai-codex.
+    description: Show account limits when the chat represented by the open menu returns provider id openai-codex on that menu's owning profile.
   show_anthropic:
     type: bool
     default: true
     label: Anthropic
-    description: Show account limits when the focused chat's returned provider id is anthropic.
+    description: Show account limits when the chat represented by the open menu returns provider id anthropic on that menu's owning profile.
   show_openrouter:
     type: bool
     default: true
     label: OpenRouter
-    description: Show account limits when the focused chat's returned provider id is openrouter.
+    description: Show account limits when the chat represented by the open menu returns provider id openrouter on that menu's owning profile.
   show_other:
     type: bool
     default: true
@@ -37,13 +37,13 @@ config_schema:
     type: bool
     default: false
     label: Cursor (via Quota cache)
-    description: Show cached Cursor allowance from the optional Quota plugin on the focused profile. Controls display only; Quota manages its own credential access and refresh.
+    description: Show cached Cursor allowance from the optional Quota plugin on the open menu's owning profile. Controls display only; Quota manages its own credential access and refresh.
   account_refresh_mode:
     type: str
     default: "on menu open"
     choices: ["manual", "on menu open", "on menu open and focus"]
     label: Account refresh
-    description: When to read session.usage for the focused chat. Manual waits for Refresh and does not read on menu open or window focus. On menu open reads once when the menu mounts and does not read again on window focus. On menu open and focus also reads when the window gains focus.
+    description: When to read session.usage for the chat represented by the open menu, on its owning profile. Manual waits for Refresh and does not read on menu open or window focus. On menu open reads once when the menu mounts and does not read again on window focus. On menu open and focus also reads when the window gains focus.
   context_file_paths:
     type: str
     default: "filename only"
